@@ -12,19 +12,9 @@ export default function Navbar() {
         <div className="flex items-center gap-3 md:gap-4">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            alt="Mascot"
-            className="w-10 h-10 md:w-14 md:h-14 rounded-full sticker-border hidden sm:block bg-white"
-            src="/icons/icon-192x192.png"
-            referrerPolicy="no-referrer"
-            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
-          />
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
             alt="IT'S STATIC"
-            className="h-10 md:h-14 filter drop-shadow-[2px_2px_0px_#000]"
-            src="/icons/icon-192x192.png"
-            referrerPolicy="no-referrer"
-            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+            className="h-10 md:h-12 filter drop-shadow-[2px_2px_0px_#1b1b1e]"
+            src="/logo.svg"
           />
         </div>
 

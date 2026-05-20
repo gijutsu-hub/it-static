@@ -105,6 +105,8 @@
 
 /* Prevent horizontal bleed from rotated elements */
 section, header, footer { overflow-x: hidden; }
+/* Discover app header must not clip its dropdown panels */
+.discover-header { overflow: visible; }
 
 /* GUESS section tape label */
 .guess-tape {
@@ -188,14 +190,17 @@ section, header, footer { overflow-x: hidden; }
 }
 
 /* ── Discover app responsive layout ── */
+/* Large screen (>= 640px): sidebar visible, bottom nav hidden */
 .discover-sidebar { display: flex; }
 .discover-header  { padding: 12px 48px; }
 .discover-main    { margin-left: 320px; margin-top: 72px; }
 .discover-overlay-panel { position: absolute; inset: 0; z-index: 5; }
 
-@media (max-width: 767px) {
+/* Phone only: < 640px — sidebar hidden, bottom nav visible */
+@media (max-width: 639px) {
   .discover-sidebar { display: none; }
   .discover-header  { padding: 10px 16px; }
-  .discover-main    { margin-left: 0; margin-top: 64px; padding-bottom: 80px; }
-  .discover-overlay-panel { bottom: 80px; }
+  .discover-main    { margin-left: 0; margin-top: 64px; padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
+  .discover-overlay-panel { bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
+  .kyc-shell { bottom: calc(80px + env(safe-area-inset-bottom, 0px)) !important; }
 }

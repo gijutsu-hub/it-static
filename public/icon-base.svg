@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Pink brand background -->
+  <rect width="512" height="512" fill="#ff85c1"/>
+
+  <!-- TV body -->
+  <rect x="100" y="148" width="312" height="232" rx="28" fill="#fbf8fc" stroke="#1b1b1e" stroke-width="14"/>
+
+  <!-- TV screen (dark) -->
+  <rect x="130" y="178" width="252" height="172" rx="14" fill="#1b1b1e"/>
+
+  <!-- Scan lines on screen -->
+  <rect x="130" y="210" width="252" height="14" fill="#ffe24c" opacity="0.85"/>
+  <rect x="130" y="242" width="252" height="10" fill="#7ed4fd" opacity="0.75"/>
+  <rect x="130" y="268" width="252" height="13" fill="#ff85c1" opacity="0.75"/>
+  <rect x="130" y="298" width="252" height="10" fill="#ffe24c" opacity="0.55"/>
+  <rect x="130" y="322" width="252" height="8" fill="#7ed4fd" opacity="0.45"/>
+
+  <!-- Stand neck -->
+  <rect x="236" y="380" width="40" height="46" rx="6" fill="#1b1b1e"/>
+  <!-- Stand base -->
+  <rect x="172" y="418" width="168" height="22" rx="11" fill="#1b1b1e"/>
+
+  <!-- Left antenna -->
+  <line x1="158" y1="148" x2="94" y2="72" stroke="#1b1b1e" stroke-width="13" stroke-linecap="round"/>
+  <circle cx="94" cy="72" r="17" fill="#ffe24c" stroke="#1b1b1e" stroke-width="9"/>
+
+  <!-- Right antenna -->
+  <line x1="354" y1="148" x2="418" y2="72" stroke="#1b1b1e" stroke-width="13" stroke-linecap="round"/>
+  <circle cx="418" cy="72" r="17" fill="#ffe24c" stroke="#1b1b1e" stroke-width="9"/>
+</svg>

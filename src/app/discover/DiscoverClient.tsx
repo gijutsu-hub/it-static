@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import type { Session } from "next-auth";
 import { setOptions, importLibrary } from "@googlemaps/js-api-loader";
 import { doc, onSnapshot } from "firebase/firestore";
@@ -96,6 +96,26 @@ export default function DiscoverClient({ session }: Props) {
   const [locationDenied, setLocationDenied] = useState(false);
   const [selectedSquad, setSelectedSquad] = useState<Squad | null>(null);
   const [joining, setJoining] = useState<string | null>(null);
+  const [notifPanelOpen, setNotifPanelOpen] = useState(false);
+  const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
+
+  const notifRef = useRef<HTMLDivElement>(null);
+  const settingsRef = useRef<HTMLDivElement>(null);
+
+  const closeAllPanels = useCallback(() => {
+    setNotifPanelOpen(false);
+    setSettingsPanelOpen(false);
+  }, []);
+
+  useEffect(() => {
+    if (!notifPanelOpen && !settingsPanelOpen) return;
+    function onMouseDown(e: MouseEvent) {
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) setNotifPanelOpen(false);
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) setSettingsPanelOpen(false);
+    }
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [notifPanelOpen, settingsPanelOpen]);
 
   const user = session.user!;
   // Use email as stable UID since we use Next-Auth (not Firebase Auth)
@@ -372,75 +392,119 @@ export default function DiscoverClient({ session }: Props) {
           boxShadow: "4px 4px 0 rgba(27,27,30,1)",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <div
-            style={{
-              width: 48, height: 48, borderRadius: "50%",
-              border: "3px solid #1b1b1e", background: "#ff85c1",
-              display: "flex", alignItems: "center", justifyContent: "center",
-            }}
-          >
-            <span className="material-symbols-outlined" style={{ fontSize: 28, color: "#1b1b1e" }}>bolt</span>
-          </div>
-          <h1
-            style={{
-              fontFamily: "var(--font-bricolage),'Bricolage Grotesque',sans-serif",
-              fontSize: 36, fontWeight: 800, letterSpacing: "-0.02em",
-              textTransform: "lowercase", color: "#9f376f", fontStyle: "italic", lineHeight: 1,
-            }}
-          >
-            itstatic.space
-          </h1>
-        </div>
+        {/* Logo */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/logo.svg" alt="IT'S STATIC" style={{ height: 44, filter: "drop-shadow(2px 2px 0px #1b1b1e)" }} />
 
-        <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
-          <button
-            className="material-symbols-outlined"
-            style={{ color: "#9f376f", padding: 8, fontSize: 24, background: "none", border: "none", cursor: "pointer" }}
-          >notifications</button>
-          <button
-            className="material-symbols-outlined"
-            style={{ color: "#9f376f", padding: 8, fontSize: 24, background: "none", border: "none", cursor: "pointer" }}
-          >wifi_tethering</button>
-          <button
-            className="material-symbols-outlined"
-            style={{ color: "#9f376f", padding: 8, fontSize: 24, background: "none", border: "none", cursor: "pointer" }}
-          >settings</button>
-
-          <div
-            style={{
-              display: "flex", alignItems: "center", gap: 10, marginLeft: 12,
-              backgroundColor: "#ffd8e7", border: "2px solid #1b1b1e",
-              padding: "8px 16px", borderRadius: 8,
-            }}
-          >
-            <span
-              style={{
-                fontWeight: 700, fontSize: 13, letterSpacing: "0.02em",
-                textTransform: "uppercase", color: "#3d0025",
-              }}
+        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          {/* Notifications */}
+          <div ref={notifRef} style={{ position: "relative" }}>
+            <button
+              onClick={() => { setNotifPanelOpen(v => !v); setSettingsPanelOpen(false); }}
+              style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center", color: "#9f376f", padding: 8, background: "none", border: "none", cursor: "pointer", borderRadius: 6 }}
             >
-              {(user.name ?? "COMMANDER").toUpperCase().replace(/ /g, "_")}
-            </span>
-            {user.image && (
-              <img
-                src={user.image}
-                alt="Profile"
-                style={{ width: 32, height: 32, borderRadius: "50%", border: "2px solid #1b1b1e" }}
-              />
+              <span className="material-symbols-outlined" style={{ fontSize: 24 }}>notifications</span>
+              {kycSubmission?.status === "rejected" && (
+                <span style={{ position: "absolute", top: 8, right: 8, width: 8, height: 8, borderRadius: "50%", backgroundColor: "#ba1a1a", border: "1.5px solid #fbf8fc" }} />
+              )}
+              {kycSubmission?.status === "pending" && !notifPanelOpen && (
+                <span style={{ position: "absolute", top: 8, right: 8, width: 8, height: 8, borderRadius: "50%", backgroundColor: "#c7ad07", border: "1.5px solid #fbf8fc" }} />
+              )}
+            </button>
+            {notifPanelOpen && (
+              <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, width: 288, backgroundColor: "#fbf8fc", border: "3px solid #1b1b1e", boxShadow: "6px 6px 0 #1b1b1e", zIndex: 200, borderRadius: 8, overflow: "hidden" }}>
+                <div style={{ padding: "10px 14px", borderBottom: "2px solid #1b1b1e", backgroundColor: "#ffd8e7" }}>
+                  <p style={{ fontFamily: "var(--font-bricolage),'Bricolage Grotesque',sans-serif", fontWeight: 900, fontSize: 12, textTransform: "uppercase", color: "#3d0025", letterSpacing: "0.04em" }}>NOTIFICATIONS</p>
+                </div>
+                <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                  {userProfile?.kycStatus === "approved" && (
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", backgroundColor: "#c8f7c5", border: "2px solid #1b1b1e", borderRadius: 6 }}>
+                      <span className="material-symbols-outlined" style={{ fontSize: 18, color: "#4caf50", flexShrink: 0 }}>verified_user</span>
+                      <div>
+                        <p style={{ fontWeight: 800, fontSize: 12, textTransform: "uppercase", color: "#1b1b1e" }}>Identity Verified</p>
+                        <p style={{ fontSize: 11, color: "#544249", fontWeight: 600, marginTop: 2 }}>Your KYC was approved. Full access granted.</p>
+                      </div>
+                    </div>
+                  )}
+                  {kycSubmission?.status === "rejected" && (
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", backgroundColor: "#ffd8e7", border: "2px solid #ba1a1a", borderRadius: 6 }}>
+                      <span className="material-symbols-outlined" style={{ fontSize: 18, color: "#ba1a1a", flexShrink: 0 }}>cancel</span>
+                      <div>
+                        <p style={{ fontWeight: 800, fontSize: 12, textTransform: "uppercase", color: "#ba1a1a" }}>Verification Rejected</p>
+                        <p style={{ fontSize: 11, color: "#544249", fontWeight: 600, marginTop: 2 }}>Please resubmit your identity verification.</p>
+                      </div>
+                    </div>
+                  )}
+                  {kycSubmission?.status === "pending" && (
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", backgroundColor: "#ffe24c", border: "2px solid #1b1b1e", borderRadius: 6 }}>
+                      <span className="material-symbols-outlined" style={{ fontSize: 18, color: "#1b1b1e", flexShrink: 0 }}>pending</span>
+                      <div>
+                        <p style={{ fontWeight: 800, fontSize: 12, textTransform: "uppercase", color: "#1b1b1e" }}>Verification Pending</p>
+                        <p style={{ fontSize: 11, color: "#544249", fontWeight: 600, marginTop: 2 }}>Under review. We&apos;ll notify you when done.</p>
+                      </div>
+                    </div>
+                  )}
+                  {!kycSubmission && userProfile?.kycStatus !== "approved" && (
+                    <p style={{ fontSize: 12, color: "#544249", fontWeight: 600, textAlign: "center", padding: "8px 0" }}>No new notifications</p>
+                  )}
+                </div>
+              </div>
             )}
           </div>
 
+          {/* Signals (wifi tethering) */}
           <button
-            onClick={() => signOut({ callbackUrl: "/auth" })}
-            style={{
-              background: "none", border: "2px solid #877179", borderRadius: 6,
-              cursor: "pointer", color: "#544249", fontSize: 11, fontWeight: 700,
-              textTransform: "uppercase", padding: "4px 10px",
-            }}
+            onClick={() => { setActiveNav("signals"); closeAllPanels(); }}
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", color: activeNav === "signals" ? "#791651" : "#9f376f", padding: 8, background: activeNav === "signals" ? "#ffd8e7" : "none", border: "none", cursor: "pointer", borderRadius: 6 }}
           >
-            SIGN OUT
+            <span className="material-symbols-outlined" style={{ fontSize: 24 }}>wifi_tethering</span>
           </button>
+
+          {/* Settings / user pill */}
+          <div ref={settingsRef} style={{ position: "relative" }}>
+            <button
+              onClick={() => { setSettingsPanelOpen(v => !v); setNotifPanelOpen(false); }}
+              style={{ display: "flex", alignItems: "center", gap: 8, backgroundColor: settingsPanelOpen ? "#ffc1d9" : "#ffd8e7", border: "2px solid #1b1b1e", padding: "6px 10px", borderRadius: 8, cursor: "pointer", transition: "background 0.1s" }}
+            >
+              <span className="hidden sm:block" style={{ fontWeight: 700, fontSize: 12, letterSpacing: "0.02em", textTransform: "uppercase", color: "#3d0025" }}>
+                {(user.name ?? "COMMANDER").toUpperCase().replace(/ /g, "_")}
+              </span>
+              {user.image && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={user.image} alt="Profile" style={{ width: 28, height: 28, borderRadius: "50%", border: "2px solid #1b1b1e", flexShrink: 0 }} />
+              )}
+              <span className="material-symbols-outlined" style={{ fontSize: 16, color: "#3d0025" }}>
+                {settingsPanelOpen ? "expand_less" : "expand_more"}
+              </span>
+            </button>
+            {settingsPanelOpen && (
+              <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, width: 200, backgroundColor: "#fbf8fc", border: "3px solid #1b1b1e", boxShadow: "6px 6px 0 #1b1b1e", zIndex: 200, borderRadius: 8, overflow: "hidden" }}>
+                <div style={{ padding: "14px 12px", borderBottom: "2px solid #1b1b1e", textAlign: "center" }}>
+                  {user.image && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={user.image} alt="Profile" style={{ width: 44, height: 44, borderRadius: "50%", border: "3px solid #1b1b1e", display: "block", margin: "0 auto 8px" }} />
+                  )}
+                  <p style={{ fontWeight: 800, fontSize: 13, color: "#1b1b1e", textTransform: "uppercase", letterSpacing: "0.02em" }}>{user.name}</p>
+                  <p style={{ fontSize: 11, color: "#544249", marginTop: 2 }}>{user.email}</p>
+                  {userProfile?.kycStatus === "approved" && (
+                    <div style={{ display: "inline-flex", alignItems: "center", gap: 4, marginTop: 6, padding: "2px 8px", backgroundColor: "#c8f7c5", border: "1.5px solid #1b1b1e", borderRadius: 999 }}>
+                      <span className="material-symbols-outlined" style={{ fontSize: 12, color: "#4caf50" }}>verified</span>
+                      <span style={{ fontSize: 10, fontWeight: 800, color: "#4caf50", textTransform: "uppercase" }}>VERIFIED</span>
+                    </div>
+                  )}
+                </div>
+                <div style={{ padding: 8 }}>
+                  <button
+                    onClick={() => signOut({ callbackUrl: "/auth" })}
+                    style={{ width: "100%", padding: "10px 12px", backgroundColor: "#ffd8e7", border: "2px solid #1b1b1e", borderRadius: 6, cursor: "pointer", fontWeight: 700, fontSize: 12, textTransform: "uppercase", color: "#ba1a1a", display: "flex", alignItems: "center", gap: 8, fontFamily: "inherit" }}
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: 16 }}>logout</span>
+                    SIGN OUT
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -888,8 +952,8 @@ export default function DiscoverClient({ session }: Props) {
         )}
       </main>
 
-      {/* ── FAB (desktop only — mobile uses bottom nav HOST button) ────────── */}
-      {kycApproved && <div className="hidden md:block"><button
+      {/* ── FAB (≥ 640px only — phone uses bottom nav HOST button) ────────── */}
+      {kycApproved && <div className="hidden sm:block"><button
         onClick={() => setShowHostModal(true)}
         style={{
           position: "fixed", bottom: 40, right: 40,
@@ -1039,10 +1103,13 @@ export default function DiscoverClient({ session }: Props) {
             onClick={(e) => e.stopPropagation()}
             style={{
               backgroundColor: "#fbf8fc", border: "4px solid #1b1b1e",
-              boxShadow: "8px 8px 0 #1b1b1e", padding: 40,
+              boxShadow: "8px 8px 0 #1b1b1e",
               maxWidth: 480, width: "100%", borderRadius: 16,
+              maxHeight: "calc(100vh - 48px)", overflowY: "auto",
+              display: "flex", flexDirection: "column",
             }}
           >
+            <div style={{ padding: 40 }}>
             <h2
               style={{
                 fontFamily: "var(--font-bricolage),'Bricolage Grotesque',sans-serif",
@@ -1180,17 +1247,20 @@ export default function DiscoverClient({ session }: Props) {
                 {hosting ? "DEPLOYING..." : "DEPLOY SQUAD"}
               </button>
             </div>
+            </div>
           </div>
         </div>
       )}
 
-      {/* ── MOBILE BOTTOM NAV ─────────────────────────────────────────────── */}
+      {/* ── MOBILE BOTTOM NAV — phone only (< 640px) ─────────────────────── */}
       <div
-        className="md:hidden"
+        className="sm:hidden"
         style={{
           position: "fixed", bottom: 0, left: 0, width: "100%",
           backgroundColor: "#fbf8fc", borderTop: "4px solid #1b1b1e",
-          display: "flex", justifyContent: "space-around", padding: "10px 0",
+          display: "flex", justifyContent: "space-around",
+          paddingTop: "10px",
+          paddingBottom: "calc(10px + env(safe-area-inset-bottom, 0px))",
           zIndex: 50,
         }}
       >

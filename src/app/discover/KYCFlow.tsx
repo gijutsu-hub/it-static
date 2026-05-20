@@ -408,7 +408,7 @@ export default function KYCFlow({ uid, displayName, profilePhotoURL }: Props) {
         </div>
 
         {/* ── Step content ────────────────────────────────────────────────────── */}
-        <div className="flex-1 overflow-y-auto px-4 sm:px-8 pb-2">
+        <div className="flex-1 overflow-y-auto px-4 sm:px-8 pb-6" style={{ WebkitOverflowScrolling: "touch" }}>
           {step === 1 && <Step1Identity identity={identity} onChange={setIdentity} />}
           {step === 2 && <Step2ChallengeCode code={activeChallengeCode} />}
           {step === 3 && (
@@ -442,31 +442,29 @@ export default function KYCFlow({ uid, displayName, profilePhotoURL }: Props) {
               photoPreview={uploadedPhotoURL ?? capturedPreview}
               location={lockedLocation}
               notifStatus={notifStatus}
-              submitting={submitting}
               submitError={submitError}
-              onSubmit={handleSubmit}
             />
           )}
         </div>
 
         {/* ── Navigation footer ───────────────────────────────────────────────── */}
-        {step < 6 && (
-          <div
-            className="flex-shrink-0 flex justify-between items-center gap-3 px-4 sm:px-8 py-4"
-            style={{ borderTop: "3px solid #1b1b1e", backgroundColor: "#fbf8fc" }}
+        <div
+          className="flex-shrink-0 flex justify-between items-center gap-3 px-4 sm:px-8 py-4"
+          style={{ borderTop: "3px solid #1b1b1e", backgroundColor: "#fbf8fc" }}
+        >
+          <button
+            onClick={() => setStep((s) => Math.max(1, s - 1))}
+            disabled={step === 1}
+            className="flex-1 sm:flex-none py-3 px-5 font-black text-sm uppercase tracking-wide border-[3px] border-on-surface
+              transition-[transform,box-shadow] duration-75
+              disabled:opacity-40 disabled:cursor-not-allowed
+              enabled:shadow-[4px_4px_0_#1b1b1e] enabled:active:shadow-[1px_1px_0_#1b1b1e]
+              enabled:active:translate-x-px enabled:active:translate-y-px enabled:cursor-pointer"
+            style={{ fontFamily: "var(--font-bricolage)", backgroundColor: "#fbf8fc", color: "#1b1b1e" }}
           >
-            <button
-              onClick={() => setStep((s) => Math.max(1, s - 1))}
-              disabled={step === 1}
-              className="flex-1 sm:flex-none py-3 px-5 font-black text-sm uppercase tracking-wide border-[3px] border-on-surface
-                transition-[transform,box-shadow] duration-75
-                disabled:opacity-40 disabled:cursor-not-allowed
-                enabled:shadow-[4px_4px_0_#1b1b1e] enabled:active:shadow-[1px_1px_0_#1b1b1e]
-                enabled:active:translate-x-px enabled:active:translate-y-px enabled:cursor-pointer"
-              style={{ fontFamily: "var(--font-bricolage)", backgroundColor: "#fbf8fc", color: "#1b1b1e" }}
-            >
-              ← BACK
-            </button>
+            ← BACK
+          </button>
+          {step < 6 ? (
             <button
               onClick={() => { if (canGoNext) setStep((s) => Math.min(6, s + 1)); }}
               disabled={!canGoNext}
@@ -483,8 +481,25 @@ export default function KYCFlow({ uid, displayName, profilePhotoURL }: Props) {
             >
               NEXT →
             </button>
-          </div>
-        )}
+          ) : (
+            <button
+              onClick={handleSubmit}
+              disabled={submitting}
+              className="flex-1 sm:flex-none py-3 px-7 font-black text-sm uppercase tracking-wide border-[3px] border-on-surface
+                transition-[transform,box-shadow] duration-75
+                disabled:opacity-50 disabled:cursor-not-allowed
+                enabled:shadow-[4px_4px_0_#1b1b1e] enabled:active:shadow-[1px_1px_0_#1b1b1e]
+                enabled:active:translate-x-px enabled:active:translate-y-px enabled:cursor-pointer"
+              style={{
+                fontFamily: "var(--font-bricolage)",
+                backgroundColor: submitting ? "#e4e1e6" : "#9f376f",
+                color: submitting ? "#544249" : "white",
+              }}
+            >
+              {submitting ? "SUBMITTING…" : "SUBMIT →"}
+            </button>
+          )}
+        </div>
       </div>
     </KYCShell>
   );
@@ -494,7 +509,7 @@ export default function KYCFlow({ uid, displayName, profilePhotoURL }: Props) {
 
 function KYCShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="absolute inset-0 flex flex-col overflow-hidden z-[5]"
+    <div className="absolute inset-0 flex flex-col overflow-hidden z-[5] kyc-shell"
       style={{ backgroundColor: "#fbf8fc" }}>
       {children}
     </div>
@@ -1203,16 +1218,14 @@ function Step5Notifications({ status, onRequest }: { status: string; onRequest: 
 // ── Step 6: Review & Submit ───────────────────────────────────────────────────
 
 function Step6Review({
-  identity, challengeCode, photoPreview, location, notifStatus, submitting, submitError, onSubmit,
+  identity, challengeCode, photoPreview, location, notifStatus, submitError,
 }: {
   identity: IdentityData;
   challengeCode: string;
   photoPreview: string | null;
   location: { lat: number; lng: number } | null;
   notifStatus: string;
-  submitting: boolean;
   submitError: string | null;
-  onSubmit: () => void;
 }) {
   const idLabels: Record<string, string> = {
     passport: "Passport", national_id: "National ID", drivers_license: "Driver's License",
@@ -1227,7 +1240,7 @@ function Step6Review({
   );
 
   return (
-    <div className="pb-8">
+    <div className="pb-6">
       <div className="rounded-lg p-4 mb-5 border-4 border-on-surface shadow-[6px_6px_0_#1b1b1e]"
         style={{ backgroundColor: "#ffe24c" }}>
         <p className="font-black text-base uppercase" style={{ fontFamily: "var(--font-bricolage)", color: "#1b1b1e" }}>
@@ -1306,20 +1319,6 @@ function Step6Review({
             {submitError}
           </div>
         )}
-
-        <button onClick={onSubmit} disabled={submitting}
-          className="w-full py-5 font-black text-lg uppercase border-4 border-on-surface rounded-sm mt-2
-            transition-[transform,box-shadow] duration-75
-            disabled:opacity-60 disabled:cursor-not-allowed
-            enabled:shadow-[6px_6px_0_#1b1b1e] enabled:active:shadow-[2px_2px_0_#1b1b1e]
-            enabled:active:translate-x-1 enabled:active:translate-y-1 enabled:cursor-pointer"
-          style={{
-            fontFamily: "var(--font-bricolage)",
-            backgroundColor: submitting ? "#e4e1e6" : "#9f376f",
-            color: submitting ? "#544249" : "white",
-          }}>
-          {submitting ? "SUBMITTING…" : "SUBMIT KYC APPLICATION"}
-        </button>
       </div>
     </div>
   );

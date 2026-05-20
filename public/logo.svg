@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 100" width="420" height="100" role="img" aria-label="IT'S STATIC">
+  <defs>
+    <pattern id="static-noise" x="0" y="0" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect x="0" y="0" width="2" height="2" fill="#1b1b1e" opacity="0.8"/>
+      <rect x="4" y="0" width="2" height="2" fill="#1b1b1e" opacity="0.3"/>
+      <rect x="2" y="2" width="2" height="2" fill="#1b1b1e" opacity="0.6"/>
+      <rect x="6" y="2" width="2" height="2" fill="#1b1b1e" opacity="0.9"/>
+      <rect x="0" y="4" width="2" height="2" fill="#1b1b1e" opacity="0.4"/>
+      <rect x="4" y="4" width="2" height="2" fill="#1b1b1e" opacity="0.7"/>
+      <rect x="2" y="6" width="2" height="2" fill="#1b1b1e" opacity="0.5"/>
+      <rect x="6" y="6" width="2" height="2" fill="#1b1b1e" opacity="0.2"/>
+    </pattern>
+  </defs>
+
+  <!-- TV body -->
+  <rect x="4" y="10" width="82" height="62" rx="8" fill="#ff85c1" stroke="#1b1b1e" stroke-width="4"/>
+  <!-- TV screen -->
+  <rect x="12" y="18" width="66" height="46" rx="4" fill="#fbf8fc" stroke="#1b1b1e" stroke-width="3"/>
+  <!-- Static noise fill -->
+  <rect x="12" y="18" width="66" height="46" rx="4" fill="url(#static-noise)"/>
+  <!-- Scan lines -->
+  <rect x="12" y="26" width="66" height="3" fill="#ffe24c" opacity="0.6"/>
+  <rect x="12" y="38" width="66" height="2" fill="#7ed4fd" opacity="0.5"/>
+  <rect x="12" y="50" width="66" height="3" fill="#ff85c1" opacity="0.5"/>
+  <!-- TV stand -->
+  <rect x="36" y="72" width="8" height="12" rx="2" fill="#1b1b1e"/>
+  <rect x="26" y="82" width="38" height="6" rx="3" fill="#1b1b1e"/>
+  <!-- TV antenna left -->
+  <line x1="28" y1="10" x2="14" y2="2" stroke="#1b1b1e" stroke-width="3" stroke-linecap="round"/>
+  <!-- TV antenna right -->
+  <line x1="62" y1="10" x2="76" y2="2" stroke="#1b1b1e" stroke-width="3" stroke-linecap="round"/>
+  <!-- Antenna tips -->
+  <circle cx="14" cy="2" r="3" fill="#ffe24c" stroke="#1b1b1e" stroke-width="2"/>
+  <circle cx="76" cy="2" r="3" fill="#ffe24c" stroke="#1b1b1e" stroke-width="2"/>
+
+  <!-- Brand text: IT'S -->
+  <text x="104" y="46" font-family="'Bricolage Grotesque', Arial Black, sans-serif" font-weight="900" font-size="36" fill="#1b1b1e" letter-spacing="-1" text-anchor="start">IT'S</text>
+  <!-- STATIC with pink fill -->
+  <text x="104" y="84" font-family="'Bricolage Grotesque', Arial Black, sans-serif" font-weight="900" font-size="42" fill="#9f376f" letter-spacing="-2" text-anchor="start" stroke="#1b1b1e" stroke-width="1.5" paint-order="stroke">STATIC</text>
+  <!-- Underline accent bar -->
+  <rect x="104" y="88" width="310" height="6" rx="2" fill="#ffe24c" stroke="#1b1b1e" stroke-width="2"/>
+</svg>

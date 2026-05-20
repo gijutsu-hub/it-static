@@ -50,12 +50,12 @@ export default function HeroSection() {
 
           {/* Right: image */}
           <div className="lg:col-span-5 relative mt-6 lg:mt-0">
-            <div className="aspect-square pop-gradient-2 rounded-[32px] md:rounded-[40px] sticker-border sticker-shadow relative overflow-hidden transform rotate-2 md:rotate-3 floating-sticker">
+            <div className="aspect-square rounded-[32px] md:rounded-[40px] sticker-border sticker-shadow relative overflow-hidden transform rotate-2 md:rotate-3 floating-sticker bg-secondary-container">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                alt="Character Group"
-                className="w-full h-full object-cover mix-blend-multiply opacity-90"
-                src="/icons/icon-512x512.png"
+                alt="IT'S STATIC Urban Resistance"
+                className="w-full h-full object-cover"
+                src="/hero.svg"
               />
             </div>
             <div className="hidden sm:block absolute -top-10 -right-4 md:-right-6 bg-primary-container p-3 md:p-4 sticker-border sticker-shadow transform -rotate-12 font-display-lg text-2xl md:text-4xl text-on-primary-container z-20">
