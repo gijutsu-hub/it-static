@@ -15,12 +15,16 @@ export default function Navbar() {
             alt="Mascot"
             className="w-10 h-10 md:w-14 md:h-14 rounded-full sticker-border hidden sm:block bg-white"
             src="https://lh3.googleusercontent.com/aida/ADBb0ui0V5hyJ4LKbmlRdKH5X_RqRCugYELRGY8eBAIvuLu429nejk93_NBDXzDMwuB4XxOHV1hzHSp1x7Clz2vyVMABBenUmmIqLUaWrA9LHnyNUQ63k7yK6QlRq3FJZAQCU3Y36nTxrE4zVrl17cdBxjPRG2FgkAS8qI4wRtBiiMrfY90CPMTsmHPulP-vqdhGURM8ugNzC8V2yQ1k1PZ2dUcwY0TMFWfWtHKo_Liz1v_-nbSMrXRbRHwyJnM"
+            referrerPolicy="no-referrer"
+            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
           />
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             alt="IT'S STATIC"
             className="h-10 md:h-14 filter drop-shadow-[2px_2px_0px_#000]"
-            src="https://lh3.googleusercontent.com/aida/ADBb0uhqB2RSMzGaKnMznnykCI_3KjTl3OfTCYXSIgIhCtKhCVmo5FW8eLo22NLSIB_6alM_gJq2kkgsYuJROPspSSpgI1c2IOxpAeYOjO6SGJON2l3fCMeS_oARBEskmcp4pydRib_kXYoDbjUsxx0ZtfCB0qEDA5o1LTxCr6VlYmGaadxQV3XV-dw1a6S8kCjM89pWoG-CuqR1ZeSpTYpHwzdBVdpDIMmvUKbJwKPH2Vq_VrR6s5ShN7jU0Io"
+            src="/icons/icon-192x192.png"
+            referrerPolicy="no-referrer"
+            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
           />
         </div>
 

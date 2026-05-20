@@ -150,6 +150,39 @@ export default function DiscoverClient({ session }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userProfile?.kycStatus]);
 
+  // ── Request geolocation proactively on mount (before Maps loads) ──────────
+  useEffect(() => {
+    if (!("geolocation" in navigator)) {
+      setLocationDenied(true);
+      setUserLocation({ lat: 1.3521, lng: 103.8198 });
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        setUserLocation(loc);
+        if (googleMapRef.current) {
+          googleMapRef.current.setCenter(loc);
+          googleMapRef.current.setZoom(15);
+          placeUserMarker(googleMapRef.current, loc);
+        }
+        if (firebaseReady) {
+          upsertUser(uid, {
+            displayName: user.name ?? "Anonymous",
+            photoURL: user.image ?? "",
+            location: loc,
+          }).catch(() => {});
+        }
+      },
+      () => {
+        setLocationDenied(true);
+        setUserLocation({ lat: 1.3521, lng: 103.8198 });
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Load Google Maps ───────────────────────────────────────────────────────
   useEffect(() => {
     setOptions({ key: MAPS_API_KEY, v: "weekly", libraries: ["marker"] });
@@ -170,40 +203,18 @@ export default function DiscoverClient({ session }: Props) {
 
   function initMap(Map: typeof google.maps.Map) {
     if (!mapDivRef.current) return;
+    // Use already-resolved location if available, fall back to Singapore
+    const center = userLocation ?? { lat: 1.3521, lng: 103.8198 };
     const map = new Map(mapDivRef.current, {
-      center: { lat: 1.3521, lng: 103.8198 }, // Singapore default
-      zoom: 14,
+      center,
+      zoom: userLocation ? 15 : 14,
       mapId: "RESIST_NET_MAP",
       disableDefaultUI: true,
       zoomControl: true,
       gestureHandling: "greedy",
     });
     googleMapRef.current = map;
-
-    // Get user geolocation
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-        setUserLocation(loc);
-        map.setCenter(loc);
-        map.setZoom(15);
-        placeUserMarker(map, loc);
-
-        // Update Firestore with resolved location
-        upsertUser(uid, {
-          displayName: user.name ?? "Anonymous",
-          photoURL: user.image ?? "",
-          location: loc,
-        }).catch(() => {});
-      },
-      () => {
-        setLocationDenied(true);
-        // use default Singapore center but still subscribe to all squads
-        const loc = { lat: 1.3521, lng: 103.8198 };
-        setUserLocation(loc);
-      },
-      { enableHighAccuracy: true, timeout: 8000 }
-    );
+    if (userLocation) placeUserMarker(map, userLocation);
   }
 
   // ── Subscribe to all squads from Firestore ─────────────────────────────────

@@ -1,3 +1,5 @@
+"use client";
+
 import Link from "next/link";
 
 export default function HeroSection() {
@@ -54,6 +56,11 @@ export default function HeroSection() {
                 alt="Character Group"
                 className="w-full h-full object-cover mix-blend-multiply opacity-90"
                 src="https://lh3.googleusercontent.com/aida/ADBb0uirIUHId2vWy_ZuDIKru2r4_Fu07vZ2L2jPDBlqnH4G6hYQ_MQ4Lgmktgtt8L7upxugiN4VEth6s4AE7ajqOlQSTxTOp5sB3GJ7m4N6NaieAgcYpMxtt1xeh2LfP_HZ3EgCK25JvKGUYdvRBJAkoBnnWozN_TDG0CU53N9uSCJ2b2OwvU_XU7Xhrsot_lUsHlETw_qZPoZI0S5MDQIYeKxKDc71BfzNxlu2DzsQR_EDgRGQUbCn4hYk08o"
+                referrerPolicy="no-referrer"
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).src = "/icons/icon-512x512.png";
+                  (e.currentTarget as HTMLImageElement).className = "w-full h-full object-contain p-8 opacity-60";
+                }}
               />
             </div>
             <div className="hidden sm:block absolute -top-10 -right-4 md:-right-6 bg-primary-container p-3 md:p-4 sticker-border sticker-shadow transform -rotate-12 font-display-lg text-2xl md:text-4xl text-on-primary-container z-20">

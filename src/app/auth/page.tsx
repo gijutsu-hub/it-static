@@ -2,9 +2,19 @@ import type { Metadata } from "next";
 import { Suspense } from "react";
 import AuthClient from "./AuthClient";
 
+const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || "https://itstatic.app";
+
 export const metadata: Metadata = {
-  title: "IT'S STATIC - Login",
-  description: "Join the Ecstatic Pop",
+  title: "Join the Static — Enlist Now",
+  description:
+    "Sign in or create your account to join IT'S STATIC — the urban resistance collective transmitting vibes and recalibrating souls.",
+  alternates: { canonical: `${BASE_URL}/auth` },
+  openGraph: {
+    title: "Join the Static — IT'S STATIC",
+    description: "Enlist now. No bots allowed.",
+    url: `${BASE_URL}/auth`,
+  },
+  robots: { index: false, follow: false },
 };
 
 export default function AuthPage() {
