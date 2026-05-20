@@ -15,10 +15,14 @@ const csp = [
   "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://maps.googleapis.com https://maps.gstatic.com https://accounts.google.com",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' data: https://fonts.gstatic.com",
-  // lh3.googleusercontent.com is where Google user avatars + AI-generated images live
-  "img-src 'self' data: blob: https://*.googleusercontent.com https://*.gstatic.com https://maps.googleapis.com https://maps.gstatic.com",
-  "connect-src 'self' https://*.googleapis.com wss://*.firebaseio.com https://*.firebaseio.com https://*.cloudfunctions.net",
-  "frame-src 'self' https://accounts.google.com",
+  // googleusercontent.com = Google avatars; firebasestorage = KYC/profile photos uploaded to Firebase Storage
+  "img-src 'self' data: blob: https://*.googleusercontent.com https://*.gstatic.com https://maps.googleapis.com https://maps.gstatic.com https://firebasestorage.googleapis.com https://*.firebasestorage.app",
+  // *.googleapis.com covers Firestore, Storage REST, Auth (identitytoolkit, securetoken), Maps, FCM
+  // *.firebasestorage.app covers new Firebase Storage SDK URL format (bucket: itstatic-space.firebasestorage.app)
+  // *.firebaseapp.com covers Firebase Auth domain token requests
+  "connect-src 'self' https://*.googleapis.com wss://*.firebaseio.com https://*.firebaseio.com https://*.cloudfunctions.net https://*.firebasestorage.app https://*.firebaseapp.com",
+  // *.firebaseapp.com handles OAuth redirect frames; docs.google.com for embedded Google Forms
+  "frame-src 'self' https://accounts.google.com https://*.firebaseapp.com https://docs.google.com",
   "worker-src 'self' blob:",
   "manifest-src 'self'",
 ].join("; ");

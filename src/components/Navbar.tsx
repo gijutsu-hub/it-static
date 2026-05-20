@@ -14,7 +14,7 @@ export default function Navbar() {
           <img
             alt="Mascot"
             className="w-10 h-10 md:w-14 md:h-14 rounded-full sticker-border hidden sm:block bg-white"
-            src="https://lh3.googleusercontent.com/aida/ADBb0ui0V5hyJ4LKbmlRdKH5X_RqRCugYELRGY8eBAIvuLu429nejk93_NBDXzDMwuB4XxOHV1hzHSp1x7Clz2vyVMABBenUmmIqLUaWrA9LHnyNUQ63k7yK6QlRq3FJZAQCU3Y36nTxrE4zVrl17cdBxjPRG2FgkAS8qI4wRtBiiMrfY90CPMTsmHPulP-vqdhGURM8ugNzC8V2yQ1k1PZ2dUcwY0TMFWfWtHKo_Liz1v_-nbSMrXRbRHwyJnM"
+            src="/icons/icon-192x192.png"
             referrerPolicy="no-referrer"
             onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
           />

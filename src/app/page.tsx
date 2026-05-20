@@ -1,3 +1,5 @@
+import { redirect } from "next/navigation";
+import { auth } from "@/auth";
 import Navbar from "@/components/Navbar";
 import HeroSection from "@/components/HeroSection";
 import UnpackingSection from "@/components/UnpackingSection";
@@ -6,7 +8,10 @@ import GuessTheStatic from "@/components/GuessTheStatic";
 import CtaSection from "@/components/CtaSection";
 import Footer from "@/components/Footer";
 
-export default function HomePage() {
+export default async function HomePage() {
+  const session = await auth();
+  if (session?.user) redirect("/discover");
+
   return (
     <>
       <Navbar />

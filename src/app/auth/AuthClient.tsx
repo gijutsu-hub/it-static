@@ -1,13 +1,21 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useSearchParams } from "next/navigation";
-import { signIn } from "next-auth/react";
+import { useSearchParams, useRouter } from "next/navigation";
+import { signIn, useSession } from "next-auth/react";
 
 export default function AuthClient() {
   const [googlePending, setGooglePending] = useState(false);
   const searchParams = useSearchParams();
   const isBanned = searchParams.get("banned") === "1";
+  const { data: session, status } = useSession();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (status === "authenticated" && session?.user && !isBanned) {
+      router.replace("/discover");
+    }
+  }, [status, session, isBanned, router]);
 
   async function handleGoogle() {
     if (isBanned) return;

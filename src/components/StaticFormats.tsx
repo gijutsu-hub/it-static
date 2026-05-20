@@ -27,7 +27,7 @@ export default function StaticFormats() {
                 <img
                   alt="mascot"
                   className="w-16 md:w-24 h-16 md:h-24 transform -rotate-12"
-                  src="https://lh3.googleusercontent.com/aida/ADBb0ui0V5hyJ4LKbmlRdKH5X_RqRCugYELRGY8eBAIvuLu429nejk93_NBDXzDMwuB4XxOHV1hzHSp1x7Clz2vyVMABBenUmmIqLUaWrA9LHnyNUQ63k7yK6QlRq3FJZAQCU3Y36nTxrE4zVrl17cdBxjPRG2FgkAS8qI4wRtBiiMrfY90CPMTsmHPulP-vqdhGURM8ugNzC8V2yQ1k1PZ2dUcwY0TMFWfWtHKo_Liz1v_-nbSMrXRbRHwyJnM"
+                  src="/icons/icon-192x192.png"
                 />
               </div>
               <h3 className="font-display-lg text-3xl md:text-5xl uppercase leading-none">
@@ -118,7 +118,7 @@ export default function StaticFormats() {
                 <img
                   alt="pop mascot small"
                   className="w-16 md:w-20 h-16 md:h-20"
-                  src="https://lh3.googleusercontent.com/aida/ADBb0ui0V5hyJ4LKbmlRdKH5X_RqRCugYELRGY8eBAIvuLu429nejk93_NBDXzDMwuB4XxOHV1hzHSp1x7Clz2vyVMABBenUmmIqLUaWrA9LHnyNUQ63k7yK6QlRq3FJZAQCU3Y36nTxrE4zVrl17cdBxjPRG2FgkAS8qI4wRtBiiMrfY90CPMTsmHPulP-vqdhGURM8ugNzC8V2yQ1k1PZ2dUcwY0TMFWfWtHKo_Liz1v_-nbSMrXRbRHwyJnM"
+                  src="/icons/icon-192x192.png"
                 />
               </div>
             </div>
