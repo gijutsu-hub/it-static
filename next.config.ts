@@ -15,8 +15,12 @@ const csp = [
   "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://maps.googleapis.com https://maps.gstatic.com https://accounts.google.com",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' data: https://fonts.gstatic.com",
-  // googleusercontent.com = Google avatars; firebasestorage = KYC/profile photos uploaded to Firebase Storage
-  "img-src 'self' data: blob: https://*.googleusercontent.com https://*.gstatic.com https://maps.googleapis.com https://maps.gstatic.com https://firebasestorage.googleapis.com https://*.firebasestorage.app",
+  // *.googleusercontent.com  = Google user avatars (lh3, lh4 …)
+  // *.gstatic.com            = Google static assets (fonts, map graphics, icons)
+  // *.googleapis.com         = ALL Google API CDN: map tiles (khms0-3), Static Maps, Firebase Storage …
+  // *.ggpht.com              = Google-hosted photos / Places imagery CDN
+  // *.firebasestorage.app    = new Firebase Storage bucket URL format
+  "img-src 'self' data: blob: https://*.googleusercontent.com https://*.gstatic.com https://*.googleapis.com https://*.ggpht.com https://*.firebasestorage.app",
   // *.googleapis.com covers Firestore, Storage REST, Auth (identitytoolkit, securetoken), Maps, FCM
   // *.firebasestorage.app covers new Firebase Storage SDK URL format (bucket: itstatic-space.firebasestorage.app)
   // *.firebaseapp.com covers Firebase Auth domain token requests
@@ -39,7 +43,7 @@ const nextConfig: NextConfig = {
           { key: "X-Frame-Options", value: "DENY" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           // Explicitly permit geolocation from the top-level page
-          { key: "Permissions-Policy", value: "geolocation=(self), camera=(), microphone=()" },
+          { key: "Permissions-Policy", value: "geolocation=(self), camera=(self), microphone=()" },
         ],
       },
       {
