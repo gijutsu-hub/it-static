@@ -7,6 +7,7 @@ import KYCReview from "./KYCReview";
 import SquadManagement from "./SquadManagement";
 import AnalyticsDashboard from "./AnalyticsDashboard";
 import HuntManager from "./HuntManager";
+import StoreManager from "./StoreManager";
 
 export const metadata: Metadata = { title: "Admin — IT'S STATIC" };
 
@@ -110,6 +111,12 @@ export default async function AdminPage() {
         <section>
           <SectionHeader title="🗺️ Treasure Hunts" />
           <HuntManager />
+        </section>
+
+        {/* ── Store Management ──────────────────────────────────── */}
+        <section>
+          <SectionHeader title="🛍️ Store Management" />
+          <StoreManager />
         </section>
 
       </main>

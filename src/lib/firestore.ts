@@ -18,6 +18,7 @@ import {
   orderBy,
   deleteField,
   limit,
+  increment,
 } from "firebase/firestore";
 import { ref, deleteObject } from "firebase/storage";
 import { firebaseApp, storage } from "./firebase";
@@ -57,6 +58,8 @@ export interface UserProfile {
   kycVerifiedAt?: Timestamp;
   kycExpiresAt?: Timestamp;
   badges?: string[];
+  points?: number;
+  ownedItems?: string[];
 }
 
 export interface FriendRequest {
@@ -165,6 +168,8 @@ export async function upsertUser(
       firstSeen: Timestamp.now(),
       lastSeen: Timestamp.now(),
       banned: false,
+      points: 0,
+      ownedItems: [],
     });
   } else {
     await updateDoc(userRef, {
@@ -1075,4 +1080,287 @@ export async function savePushSubscription(uid: string, subscription: PushSubscr
 export async function getPushSubscription(uid: string): Promise<PushSubscriptionJSON | null> {
   const snap = await getDoc(doc(db, "pushSubscriptions", uid));
   return snap.exists() ? (snap.data().subscription as PushSubscriptionJSON) : null;
+}
+
+// ── Points ─────────────────────────────────────────────────────────────────────
+
+export async function addPoints(uid: string, amount: number): Promise<void> {
+  await updateDoc(doc(db, "users", uid), { points: increment(amount) });
+}
+
+// ── Photo Challenges ───────────────────────────────────────────────────────────
+
+export interface PhotoChallenge {
+  id: string;
+  uid: string;
+  displayName: string;
+  photoURL: string;
+  imageURL: string;
+  storagePath: string;
+  location: { lat: number; lng: number };
+  caption: string;
+  createdAt: Timestamp;
+  expiresAt: Timestamp;
+  totalGuesses: number;
+  correctGuesses: number;
+}
+
+export interface PhotoChallengeGuess {
+  id: string;
+  challengeId: string;
+  challengerUid: string;
+  guesserUid: string;
+  guesserName: string;
+  pinLocation: { lat: number; lng: number };
+  distanceMeters: number;
+  isCorrect: boolean;
+  pointsAwarded: number;
+  createdAt: Timestamp;
+}
+
+function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371000;
+  const φ1 = lat1 * Math.PI / 180;
+  const φ2 = lat2 * Math.PI / 180;
+  const Δφ = (lat2 - lat1) * Math.PI / 180;
+  const Δλ = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+export async function createPhotoChallenge(data: {
+  uid: string;
+  displayName: string;
+  photoURL: string;
+  imageURL: string;
+  storagePath: string;
+  location: { lat: number; lng: number };
+  caption: string;
+}): Promise<string> {
+  const expiresAt = Timestamp.fromDate(new Date(Date.now() + 24 * 60 * 60 * 1000));
+  const ref = await addDoc(collection(db, "photoChallenges"), {
+    ...data,
+    createdAt: Timestamp.now(),
+    expiresAt,
+    totalGuesses: 0,
+    correctGuesses: 0,
+  });
+  await addPoints(data.uid, 5);
+  return ref.id;
+}
+
+export function subscribeToPhotoChallenges(
+  callback: (challenges: PhotoChallenge[]) => void
+): () => void {
+  const q = query(
+    collection(db, "photoChallenges"),
+    where("expiresAt", ">", Timestamp.now()),
+    orderBy("expiresAt", "desc")
+  );
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as PhotoChallenge)));
+  }, () => {});
+}
+
+export function subscribeToPhotoChallengesByUser(
+  uid: string,
+  callback: (challenges: PhotoChallenge[]) => void
+): () => void {
+  const q = query(collection(db, "photoChallenges"), where("uid", "==", uid), orderBy("createdAt", "desc"));
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as PhotoChallenge)));
+  }, () => {});
+}
+
+export async function submitPhotoGuess(
+  challengeId: string,
+  guesserUid: string,
+  guesserName: string,
+  pinLocation: { lat: number; lng: number }
+): Promise<{ isCorrect: boolean; distanceMeters: number; alreadyGuessed: boolean }> {
+  const existingQ = query(
+    collection(db, "photoChallengeGuesses"),
+    where("challengeId", "==", challengeId),
+    where("guesserUid", "==", guesserUid)
+  );
+  const existingSnap = await getDocs(existingQ);
+  if (!existingSnap.empty) {
+    const d = existingSnap.docs[0].data();
+    return { isCorrect: d.isCorrect, distanceMeters: d.distanceMeters, alreadyGuessed: true };
+  }
+
+  const challengeSnap = await getDoc(doc(db, "photoChallenges", challengeId));
+  if (!challengeSnap.exists()) throw new Error("Challenge not found");
+  const challenge = challengeSnap.data() as PhotoChallenge;
+
+  const dist = haversineMeters(challenge.location.lat, challenge.location.lng, pinLocation.lat, pinLocation.lng);
+  const isCorrect = dist <= 5;
+
+  await addDoc(collection(db, "photoChallengeGuesses"), {
+    challengeId,
+    challengerUid: challenge.uid,
+    guesserUid,
+    guesserName,
+    pinLocation,
+    distanceMeters: Math.round(dist),
+    isCorrect,
+    pointsAwarded: isCorrect ? 10 : 0,
+    createdAt: Timestamp.now(),
+  });
+
+  await updateDoc(doc(db, "photoChallenges", challengeId), {
+    totalGuesses: increment(1),
+    ...(isCorrect ? { correctGuesses: increment(1) } : {}),
+  });
+
+  if (isCorrect) {
+    await addPoints(guesserUid, 10);
+    await sendInAppNotification(challenge.uid, {
+      title: "📍 Correct Guess!",
+      body: `${guesserName} found your photo spot!`,
+      type: "challenge_correct",
+    });
+  }
+
+  return { isCorrect, distanceMeters: Math.round(dist), alreadyGuessed: false };
+}
+
+export function subscribeToMyChallengeGuesses(
+  uid: string,
+  callback: (guesses: PhotoChallengeGuess[]) => void
+): () => void {
+  const q = query(collection(db, "photoChallengeGuesses"), where("guesserUid", "==", uid));
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as PhotoChallengeGuess)));
+  }, () => {});
+}
+
+// ── In-App Notifications ───────────────────────────────────────────────────────
+
+export interface AppNotification {
+  id: string;
+  toUid: string;
+  title: string;
+  body: string;
+  type: string;
+  read: boolean;
+  url?: string;
+  createdAt: Timestamp;
+}
+
+export async function sendInAppNotification(
+  toUid: string,
+  data: { title: string; body: string; type: string; url?: string }
+): Promise<void> {
+  await addDoc(collection(db, "notifications"), {
+    toUid,
+    ...data,
+    read: false,
+    createdAt: Timestamp.now(),
+  });
+}
+
+export function subscribeToMyNotifications(
+  uid: string,
+  callback: (notifs: AppNotification[]) => void
+): () => void {
+  const q = query(
+    collection(db, "notifications"),
+    where("toUid", "==", uid),
+    orderBy("createdAt", "desc"),
+    limit(30)
+  );
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as AppNotification)));
+  }, () => {});
+}
+
+export async function markNotificationRead(notifId: string): Promise<void> {
+  await updateDoc(doc(db, "notifications", notifId), { read: true });
+}
+
+export async function markAllNotificationsRead(uid: string): Promise<void> {
+  const q = query(collection(db, "notifications"), where("toUid", "==", uid), where("read", "==", false));
+  const snap = await getDocs(q);
+  await Promise.all(snap.docs.map((d) => updateDoc(d.ref, { read: true })));
+}
+
+// ── Store ──────────────────────────────────────────────────────────────────────
+
+export interface StoreItem {
+  id: string;
+  name: string;
+  description: string;
+  cost: number;
+  type: "badge" | "frame" | "emoji";
+  value: string;
+  emoji?: string;
+  active: boolean;
+  createdAt: Timestamp;
+}
+
+export function subscribeToStoreItems(
+  callback: (items: StoreItem[]) => void
+): () => void {
+  const q = query(collection(db, "storeItems"), where("active", "==", true), orderBy("cost", "asc"));
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as StoreItem)));
+  }, () => {});
+}
+
+export function subscribeToAllStoreItems(
+  callback: (items: StoreItem[]) => void
+): () => void {
+  const q = query(collection(db, "storeItems"), orderBy("createdAt", "desc"));
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as StoreItem)));
+  }, () => {});
+}
+
+export async function createStoreItem(
+  data: Omit<StoreItem, "id" | "createdAt">
+): Promise<string> {
+  const ref = await addDoc(collection(db, "storeItems"), { ...data, createdAt: Timestamp.now() });
+  return ref.id;
+}
+
+export async function updateStoreItem(id: string, data: Partial<StoreItem>): Promise<void> {
+  await updateDoc(doc(db, "storeItems", id), data);
+}
+
+export async function purchaseStoreItem(
+  uid: string,
+  item: StoreItem
+): Promise<{ success: boolean; reason?: string }> {
+  const userSnap = await getDoc(doc(db, "users", uid));
+  if (!userSnap.exists()) return { success: false, reason: "User not found" };
+  const userData = userSnap.data() as UserProfile;
+  const currentPoints = userData.points ?? 0;
+  const ownedItems = userData.ownedItems ?? [];
+
+  if (ownedItems.includes(item.id)) return { success: false, reason: "Already owned" };
+  if (currentPoints < item.cost) return { success: false, reason: "Not enough points" };
+
+  await updateDoc(doc(db, "users", uid), {
+    points: increment(-item.cost),
+    ownedItems: arrayUnion(item.id),
+    ...(item.type === "badge" ? { badges: arrayUnion(item.value) } : {}),
+  });
+
+  return { success: true };
+}
+
+// ── Leaderboard ────────────────────────────────────────────────────────────────
+
+export function subscribeToLeaderboard(
+  callback: (users: UserProfile[]) => void
+): () => void {
+  return onSnapshot(collection(db, "users"), (snap) => {
+    const users = snap.docs
+      .map((d) => d.data() as UserProfile)
+      .filter((u) => !u.banned)
+      .sort((a, b) => (b.points ?? 0) - (a.points ?? 0))
+      .slice(0, 30);
+    callback(users);
+  }, () => {});
 }

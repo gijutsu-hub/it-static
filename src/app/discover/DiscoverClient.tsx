@@ -14,14 +14,17 @@ import {
   issueTicket,
   subscribeToPhotoDrops,
   addPhotoDrop,
+  createPhotoChallenge,
   subscribeToIncomingCall,
   subscribeToAllHints,
   subscribeToFriendRequests,
   sendFriendRequest,
   acceptFriendRequest,
   getOrCreateDMChat,
-  savePushSubscription,
   awardBadge,
+  submitPhotoGuess,
+  subscribeToMyNotifications,
+  markAllNotificationsRead,
   db,
   type Squad,
   type KYCSubmission,
@@ -30,6 +33,8 @@ import {
   type WebRTCCall,
   type HuntHint,
   type FriendRequest,
+  type PhotoChallenge,
+  type AppNotification,
 } from "@/lib/firestore";
 import { authReady, storage } from "@/lib/firebase";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
@@ -40,6 +45,9 @@ import IntelPanel from "./IntelPanel";
 import FriendsDirectory from "./FriendsDirectory";
 import TreasureHuntPanel from "./TreasureHuntPanel";
 import UserProfileModal from "./UserProfileModal";
+import PhotoChallengePanel from "./PhotoChallengePanel";
+import LeaderboardPanel from "./LeaderboardPanel";
+import StorePanel from "./StorePanel";
 import WebRTCCallComponent from "./WebRTCCall";
 import { signOut } from "next-auth/react";
 import QRCode from "qrcode";
@@ -101,7 +109,7 @@ export default function DiscoverClient({ session }: Props) {
   const [allSquads, setAllSquads] = useState<Squad[]>([]);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [nearbySquads, setNearbySquads] = useState<Squad[]>([]);
-  const [activeNav, setActiveNav] = useState<"squads" | "intel" | "recruits" | "kyc" | "friends" | "hunt">(
+  const [activeNav, setActiveNav] = useState<"squads" | "intel" | "recruits" | "kyc" | "friends" | "hunt" | "challenge" | "store" | "leaderboard">(
     "squads"
   );
   const [kycSubmission, setKycSubmission] = useState<KYCSubmission | null | undefined>(undefined);
@@ -137,7 +145,11 @@ export default function DiscoverClient({ session }: Props) {
   const [selectedUserProfile, setSelectedUserProfile] = useState<UserProfile | null>(null);
   const [huntHints, setHuntHints] = useState<HuntHint[]>([]);
   const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([]);
-  const [pushSubscribed, setPushSubscribed] = useState(false);
+  const [appNotifications, setAppNotifications] = useState<AppNotification[]>([]);
+  const [guessMode, setGuessMode] = useState<{ challenge: PhotoChallenge } | null>(null);
+  const [guessResult, setGuessResult] = useState<{ isCorrect: boolean; distanceMeters: number } | null>(null);
+  const [guessSubmitting, setGuessSubmitting] = useState(false);
+  const guessPinMarkerRef = useRef<google.maps.marker.AdvancedMarkerElement | null>(null);
 
   const AdvancedMarkerElementRef = useRef<typeof google.maps.marker.AdvancedMarkerElement | null>(null);
   const hostMapDivRef = useRef<HTMLDivElement>(null);
@@ -343,26 +355,30 @@ export default function DiscoverClient({ session }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid, firebaseReady]);
 
-  // ── Register web push subscription ────────────────────────────────────────
+  // ── Request notification permission on mount ─────────────────────────────
   useEffect(() => {
-    if (!firebaseReady || pushSubscribed) return;
-    async function registerPush() {
-      try {
-        const permission = await Notification.requestPermission();
-        if (permission !== "granted") return;
-        const reg = await navigator.serviceWorker.ready;
-        const existing = await reg.pushManager.getSubscription();
-        const sub = existing ?? await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY,
-        });
-        await savePushSubscription(uid, sub.toJSON());
-        setPushSubscribed(true);
-      } catch (e) {
-        console.warn("Push registration failed:", e);
-      }
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
     }
-    registerPush();
+  }, []);
+
+  // ── Subscribe to in-app notifications ─────────────────────────────────────
+  useEffect(() => {
+    if (!firebaseReady) return;
+    return subscribeToMyNotifications(uid, (notifs) => {
+      setAppNotifications(notifs);
+      // Fire browser notification for new unread items
+      const unread = notifs.filter((n) => !n.read);
+      if (unread.length > 0 && Notification.permission === "granted") {
+        const latest = unread[0];
+        try {
+          new Notification(latest.title, {
+            body: latest.body,
+            icon: "/icons/icon-192x192.png",
+          });
+        } catch { /* ignore */ }
+      }
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid, firebaseReady]);
 
@@ -389,12 +405,15 @@ export default function DiscoverClient({ session }: Props) {
       const wrap = document.createElement("div");
       wrap.style.cssText = "display:flex;flex-direction:column;align-items:center;cursor:pointer;";
       wrap.innerHTML = `
-        <div style="width:48px;height:48px;border-radius:50%;overflow:hidden;border:3px solid #ffe24c;box-shadow:4px 4px 0 #1b1b1e;background:#1b1b1e;">
-          <img src="${drop.imageURL}" style="width:100%;height:100%;object-fit:cover;" />
+        <div style="background:#1b1b1e;border:3px solid #ffe24c;box-shadow:4px 4px 0 #ffe24c;overflow:hidden;max-width:160px;">
+          <img src="${drop.imageURL}" style="width:160px;height:90px;object-fit:cover;display:block;" />
+          <div style="padding:4px 8px;">
+            <div style="color:#ffe24c;font-size:9px;font-weight:800;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${drop.displayName}</div>
+            <div style="color:#aaa;font-size:8px;font-weight:600;white-space:nowrap;">@ ${drop.location.lat.toFixed(4)}, ${drop.location.lng.toFixed(4)}</div>
+          </div>
         </div>
-        <div style="background:#ffe24c;border:1.5px solid #1b1b1e;padding:2px 6px;font-size:9px;font-weight:800;text-transform:uppercase;margin-top:2px;white-space:nowrap;max-width:80px;overflow:hidden;text-overflow:ellipsis;">${drop.displayName}</div>
-        <div style="width:2px;height:10px;background:#1b1b1e;"></div>
-        <div style="width:6px;height:3px;background:#1b1b1e;opacity:0.4;border-radius:999px;"></div>`;
+        <div style="width:2px;height:10px;background:#ffe24c;"></div>
+        <div style="width:6px;height:3px;background:#ffe24c;opacity:0.6;border-radius:999px;"></div>`;
       const marker = new AME({ map, position: drop.location, content: wrap, zIndex: 8 });
       wrap.addEventListener("click", () => {
         setSelectedPhotoDrop(drop);
@@ -631,6 +650,16 @@ export default function DiscoverClient({ session }: Props) {
         location: userLocation,
         caption: photoDropCaption.trim().slice(0, 150),
       });
+      // Also create a photo challenge for others to guess
+      await createPhotoChallenge({
+        uid,
+        displayName: user.name ?? "Anonymous",
+        photoURL: user.image ?? "",
+        imageURL,
+        storagePath: path,
+        location: userLocation,
+        caption: photoDropCaption.trim().slice(0, 150),
+      });
       awardBadge(uid, "explorer").catch(() => {});
       setShowPhotoDropModal(false);
       setPhotoDropCaption("");
@@ -639,6 +668,27 @@ export default function DiscoverClient({ session }: Props) {
       console.error(e);
     } finally {
       setPhotoDropUploading(false);
+    }
+  }
+
+  async function handleSubmitGuess() {
+    if (!guessMode || !googleMapRef.current) return;
+    const center = googleMapRef.current.getCenter();
+    if (!center) return;
+    const pinLocation = { lat: center.lat(), lng: center.lng() };
+    setGuessSubmitting(true);
+    try {
+      const result = await submitPhotoGuess(
+        guessMode.challenge.id,
+        uid,
+        user.name ?? "Anonymous",
+        pinLocation
+      );
+      setGuessResult({ isCorrect: result.isCorrect, distanceMeters: result.distanceMeters });
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setGuessSubmitting(false);
     }
   }
 
@@ -703,23 +753,35 @@ export default function DiscoverClient({ session }: Props) {
           {/* Notifications */}
           <div ref={notifRef} style={{ position: "relative" }}>
             <button
-              onClick={() => { setNotifPanelOpen(v => !v); setSettingsPanelOpen(false); }}
+              onClick={() => {
+                setNotifPanelOpen(v => !v);
+                setSettingsPanelOpen(false);
+                if (!notifPanelOpen && appNotifications.some(n => !n.read)) {
+                  markAllNotificationsRead(uid).catch(() => {});
+                }
+              }}
+              aria-label="Notifications"
               style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center", color: "#9f376f", padding: 8, background: "none", border: "none", cursor: "pointer", borderRadius: 6 }}
             >
               <span className="material-symbols-outlined" style={{ fontSize: 24 }}>notifications</span>
-              {kycSubmission?.status === "rejected" && (
+              {(appNotifications.some(n => !n.read) || kycSubmission?.status === "rejected") && (
                 <span style={{ position: "absolute", top: 8, right: 8, width: 8, height: 8, borderRadius: "50%", backgroundColor: "#ba1a1a", border: "1.5px solid #fbf8fc" }} />
               )}
-              {kycSubmission?.status === "pending" && !notifPanelOpen && (
+              {kycSubmission?.status === "pending" && !notifPanelOpen && !appNotifications.some(n => !n.read) && (
                 <span style={{ position: "absolute", top: 8, right: 8, width: 8, height: 8, borderRadius: "50%", backgroundColor: "#c7ad07", border: "1.5px solid #fbf8fc" }} />
               )}
             </button>
             {notifPanelOpen && (
-              <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, width: 288, backgroundColor: "#fbf8fc", border: "3px solid #1b1b1e", boxShadow: "6px 6px 0 #1b1b1e", zIndex: 200, borderRadius: 8, overflow: "hidden" }}>
-                <div style={{ padding: "10px 14px", borderBottom: "2px solid #1b1b1e", backgroundColor: "#ffd8e7" }}>
+              <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, width: 300, backgroundColor: "#fbf8fc", border: "3px solid #1b1b1e", boxShadow: "6px 6px 0 #1b1b1e", zIndex: 200, borderRadius: 8, overflow: "hidden" }}>
+                <div style={{ padding: "10px 14px", borderBottom: "2px solid #1b1b1e", backgroundColor: "#ffd8e7", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                   <p style={{ fontFamily: "var(--font-bricolage),'Bricolage Grotesque',sans-serif", fontWeight: 900, fontSize: 12, textTransform: "uppercase", color: "#3d0025", letterSpacing: "0.04em" }}>NOTIFICATIONS</p>
+                  {appNotifications.some(n => !n.read) && (
+                    <button onClick={() => markAllNotificationsRead(uid).catch(() => {})} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 10, fontWeight: 700, color: "#9f376f", textTransform: "uppercase", fontFamily: "inherit" }}>
+                      Mark all read
+                    </button>
+                  )}
                 </div>
-                <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 8, maxHeight: 320, overflowY: "auto" }}>
                   {userProfile?.kycStatus === "approved" && (
                     <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", backgroundColor: "#c8f7c5", border: "2px solid #1b1b1e", borderRadius: 6 }}>
                       <span className="material-symbols-outlined" style={{ fontSize: 18, color: "#4caf50", flexShrink: 0 }}>verified_user</span>
@@ -747,7 +809,17 @@ export default function DiscoverClient({ session }: Props) {
                       </div>
                     </div>
                   )}
-                  {!kycSubmission && userProfile?.kycStatus !== "approved" && (
+                  {appNotifications.slice(0, 10).map((notif) => (
+                    <div key={notif.id} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", backgroundColor: notif.read ? "#fbf8fc" : "#ffd8e7", border: "2px solid #1b1b1e", borderRadius: 6 }}>
+                      <span className="material-symbols-outlined" style={{ fontSize: 18, color: "#9f376f", flexShrink: 0 }}>notifications_active</span>
+                      <div style={{ flex: 1 }}>
+                        <p style={{ fontWeight: 800, fontSize: 12, textTransform: "uppercase", color: "#1b1b1e" }}>{notif.title}</p>
+                        <p style={{ fontSize: 11, color: "#544249", fontWeight: 600, marginTop: 2 }}>{notif.body}</p>
+                      </div>
+                      {!notif.read && <span style={{ width: 8, height: 8, borderRadius: "50%", backgroundColor: "#9f376f", flexShrink: 0, marginTop: 4 }} />}
+                    </div>
+                  ))}
+                  {appNotifications.length === 0 && !kycSubmission && userProfile?.kycStatus !== "approved" && (
                     <p style={{ fontSize: 12, color: "#544249", fontWeight: 600, textAlign: "center", padding: "8px 0" }}>No new notifications</p>
                   )}
                 </div>
@@ -877,6 +949,9 @@ export default function DiscoverClient({ session }: Props) {
             { icon: "diversity_3", label: "Friends", key: "friends" },
             { icon: "article", label: "Intel", key: "intel" },
             { icon: "explore", label: "HUNT", key: "hunt" },
+            { icon: "photo_camera", label: "CHALLENGES", key: "challenge" },
+            { icon: "leaderboard", label: "LEADERBOARD", key: "leaderboard" },
+            { icon: "storefront", label: "STORE", key: "store" },
           ].map((item) => {
             const isActive = activeNav === item.key;
             const isKyc = item.key === "kyc";
@@ -937,6 +1012,11 @@ export default function DiscoverClient({ session }: Props) {
                 </span>
                 <span style={{ flex: 1 }}>{item.label}</span>
                 {kycIndicator}
+                {item.key === "store" && (userProfile?.points ?? 0) > 0 && (
+                  <span style={{ backgroundColor: "#ffe24c", border: "1px solid #1b1b1e", padding: "1px 6px", fontSize: 9, fontWeight: 800, borderRadius: 2 }}>
+                    {userProfile?.points ?? 0}⭐
+                  </span>
+                )}
               </button>
             );
           })}
@@ -1085,35 +1165,117 @@ export default function DiscoverClient({ session }: Props) {
           </div>
         )}
 
+        {/* Photo Challenges panel */}
+        {activeNav === "challenge" && !guessMode && (
+          <div className="discover-overlay-panel" style={{ position: "relative" }}>
+            <PhotoChallengePanel
+              uid={uid}
+              userPoints={userProfile?.points ?? 0}
+              onStartGuess={(challenge) => {
+                setGuessMode({ challenge });
+                setGuessResult(null);
+              }}
+            />
+          </div>
+        )}
+
+        {/* Leaderboard panel */}
+        {activeNav === "leaderboard" && (
+          <div className="discover-overlay-panel">
+            <LeaderboardPanel myUid={uid} />
+          </div>
+        )}
+
+        {/* Store panel */}
+        {activeNav === "store" && (
+          <div className="discover-overlay-panel">
+            <StorePanel uid={uid} userProfile={userProfile ?? null} onPointsUpdate={() => {}} />
+          </div>
+        )}
+
         {/* Google Map — kept mounted for Google Maps lifecycle, hidden when overlay panels are active */}
-        <div
-          ref={mapDivRef}
-          style={{
-            width: "100%",
-            height: "100%",
-            visibility:
-              activeNav === "recruits" ||
-              activeNav === "kyc" ||
-              activeNav === "intel" ||
-              activeNav === "friends" ||
-              activeNav === "hunt" ||
-              (activeNav === "squads" && !!mySquad && kycApproved)
-                ? "hidden"
-                : "visible",
-            pointerEvents:
-              activeNav === "recruits" ||
-              activeNav === "kyc" ||
-              activeNav === "intel" ||
-              activeNav === "friends" ||
-              activeNav === "hunt" ||
-              (activeNav === "squads" && !!mySquad && kycApproved)
-                ? "none"
-                : "auto",
-          }}
-        />
+        {(() => {
+          const panelActive = (activeNav === "recruits" || activeNav === "kyc" || activeNav === "intel" ||
+            activeNav === "friends" || activeNav === "hunt" || activeNav === "leaderboard" ||
+            activeNav === "store" || (activeNav === "challenge" && !guessMode) ||
+            (activeNav === "squads" && !!mySquad && kycApproved));
+          return (
+            <div
+              ref={mapDivRef}
+              style={{
+                width: "100%",
+                height: "100%",
+                visibility: panelActive ? "hidden" : "visible",
+                pointerEvents: panelActive ? "none" : "auto",
+              }}
+            />
+          );
+        })()}
+
+        {/* Guess mode overlay */}
+        {guessMode && (
+          <div style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 30 }}>
+            {/* Targeting crosshair */}
+            <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", pointerEvents: "none" }}>
+              <div style={{ width: 40, height: 40, position: "relative" }}>
+                <div style={{ position: "absolute", top: "50%", left: 0, right: 0, height: 2, background: "#9f376f", transform: "translateY(-50%)" }} />
+                <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 2, background: "#9f376f", transform: "translateX(-50%)" }} />
+                <div style={{ position: "absolute", inset: 4, borderRadius: "50%", border: "2px solid #9f376f" }} />
+              </div>
+            </div>
+
+            {/* Top: challenge preview */}
+            <div style={{ position: "absolute", top: 16, left: "50%", transform: "translateX(-50%)", background: "#1b1b1e", border: "3px solid #ffe24c", padding: "8px 12px", display: "flex", alignItems: "center", gap: 10, pointerEvents: "auto", maxWidth: 320 }}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={guessMode.challenge.imageURL} alt="" style={{ width: 48, height: 48, objectFit: "cover", border: "2px solid #ffe24c", flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ color: "#ffe24c", fontWeight: 800, fontSize: 11, textTransform: "uppercase" }}>WHERE WAS THIS TAKEN?</p>
+                <p style={{ color: "#aaa", fontSize: 10, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Move the map, then drop your pin</p>
+              </div>
+              <button onClick={() => { setGuessMode(null); setGuessResult(null); setActiveNav("challenge"); }} style={{ background: "none", border: "none", cursor: "pointer", color: "#aaa", padding: 4, flexShrink: 0 }}>
+                <span className="material-symbols-outlined" style={{ fontSize: 20 }}>close</span>
+              </button>
+            </div>
+
+            {/* Bottom: submit button */}
+            <div style={{ position: "absolute", bottom: 100, left: "50%", transform: "translateX(-50%)", pointerEvents: "auto", width: "calc(100% - 48px)", maxWidth: 400 }}>
+              {guessResult ? (
+                <div style={{ background: guessResult.isCorrect ? "#c8f7c5" : "#ffd8e7", border: "3px solid #1b1b1e", boxShadow: "4px 4px 0 #1b1b1e", padding: "16px 20px", textAlign: "center" }}>
+                  <p style={{ fontFamily: "var(--font-bricolage,'Bricolage Grotesque',sans-serif)", fontWeight: 900, fontSize: 20, textTransform: "uppercase", color: "#1b1b1e", marginBottom: 4 }}>
+                    {guessResult.isCorrect ? "🎯 CORRECT!" : `📍 ${guessResult.distanceMeters}m away`}
+                  </p>
+                  <p style={{ fontSize: 12, color: "#544249", fontWeight: 600, marginBottom: 12 }}>
+                    {guessResult.isCorrect ? "You earned +10 points!" : "Better luck next time!"}
+                  </p>
+                  <button
+                    onClick={() => { setGuessMode(null); setGuessResult(null); setActiveNav("challenge"); }}
+                    style={{ padding: "10px 24px", background: "#9f376f", color: "white", border: "2px solid #1b1b1e", fontWeight: 800, fontSize: 12, textTransform: "uppercase", cursor: "pointer", boxShadow: "3px 3px 0 #1b1b1e", fontFamily: "inherit" }}
+                  >
+                    BACK TO CHALLENGES
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={handleSubmitGuess}
+                  disabled={guessSubmitting}
+                  style={{
+                    width: "100%", padding: "16px", background: guessSubmitting ? "#e4e1e6" : "#9f376f",
+                    color: "white", border: "3px solid #1b1b1e", fontWeight: 900, fontSize: 16,
+                    textTransform: "uppercase", cursor: guessSubmitting ? "not-allowed" : "pointer",
+                    boxShadow: "4px 4px 0 #1b1b1e", fontFamily: "inherit",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                  }}
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: 22, fontVariationSettings: "'FILL' 1" }}>location_on</span>
+                  {guessSubmitting ? "SUBMITTING…" : "DROP PIN HERE"}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Loading overlay */}
-        {!mapsReady && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "hunt" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
+        {!mapsReady && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "hunt" && activeNav !== "leaderboard" && activeNav !== "store" && !(activeNav === "challenge" && !guessMode) && !(activeNav === "squads" && !!mySquad && kycApproved) && (
           <div
             style={{
               position: "absolute", inset: 0,
@@ -1146,7 +1308,7 @@ export default function DiscoverClient({ session }: Props) {
         )}
 
         {/* Location denied notice */}
-        {locationDenied && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "hunt" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
+        {locationDenied && !guessMode && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "hunt" && activeNav !== "leaderboard" && activeNav !== "store" && !(activeNav === "challenge" && !guessMode) && !(activeNav === "squads" && !!mySquad && kycApproved) && (
           <div
             style={{
               position: "absolute", top: 16, left: "50%",
@@ -1183,7 +1345,7 @@ export default function DiscoverClient({ session }: Props) {
         )}
 
         {/* ── RIGHT OVERLAY PANELS ──────────────────────────────────────── */}
-        {activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "hunt" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
+        {!guessMode && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "hunt" && activeNav !== "leaderboard" && activeNav !== "store" && activeNav !== "challenge" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
         <div
           style={{
             position: "absolute", right: 24, top: 24,
@@ -1829,9 +1991,9 @@ export default function DiscoverClient({ session }: Props) {
         {([
           { icon: mySquad ? "chat" : "map", label: mySquad ? "CHAT" : "MAP", key: "squads" },
           { icon: "person_search", label: "RECRUITS", key: "recruits" },
-          { icon: "diversity_3", label: "FRIENDS", key: "friends" },
+          { icon: "photo_camera", label: "CHALLENGE", key: "challenge" },
           { icon: "explore", label: "HUNT", key: "hunt" },
-          { icon: "article", label: "INTEL", key: "intel" },
+          { icon: "storefront", label: "STORE", key: "store" },
         ] as const).map((item) => {
           const isActive = activeNav === item.key;
           const isLocked = !kycApproved;
