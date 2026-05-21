@@ -25,6 +25,7 @@ import {
   submitPhotoGuess,
   subscribeToMyNotifications,
   markAllNotificationsRead,
+  subscribeToSquadPhotos,
   db,
   type Squad,
   type KYCSubmission,
@@ -35,6 +36,7 @@ import {
   type FriendRequest,
   type PhotoChallenge,
   type AppNotification,
+  type SquadPhoto,
 } from "@/lib/firestore";
 import { authReady, storage } from "@/lib/firebase";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
@@ -43,9 +45,8 @@ import KYCFlow from "./KYCFlow";
 import SquadChat from "./SquadChat";
 import IntelPanel from "./IntelPanel";
 import FriendsDirectory from "./FriendsDirectory";
-import TreasureHuntPanel from "./TreasureHuntPanel";
 import UserProfileModal from "./UserProfileModal";
-import PhotoChallengePanel from "./PhotoChallengePanel";
+import ExplorePanel from "./ExplorePanel";
 import LeaderboardPanel from "./LeaderboardPanel";
 import StorePanel from "./StorePanel";
 import WebRTCCallComponent from "./WebRTCCall";
@@ -109,7 +110,7 @@ export default function DiscoverClient({ session }: Props) {
   const [allSquads, setAllSquads] = useState<Squad[]>([]);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [nearbySquads, setNearbySquads] = useState<Squad[]>([]);
-  const [activeNav, setActiveNav] = useState<"squads" | "intel" | "recruits" | "kyc" | "friends" | "hunt" | "challenge" | "store" | "leaderboard">(
+  const [activeNav, setActiveNav] = useState<"squads" | "intel" | "recruits" | "kyc" | "friends" | "explore" | "store" | "leaderboard">(
     "squads"
   );
   const [kycSubmission, setKycSubmission] = useState<KYCSubmission | null | undefined>(undefined);
@@ -150,6 +151,8 @@ export default function DiscoverClient({ session }: Props) {
   const [guessResult, setGuessResult] = useState<{ isCorrect: boolean; distanceMeters: number } | null>(null);
   const [guessSubmitting, setGuessSubmitting] = useState(false);
   const guessPinMarkerRef = useRef<google.maps.marker.AdvancedMarkerElement | null>(null);
+  const [squadPhotos, setSquadPhotos] = useState<SquadPhoto[]>([]);
+  const squadPhotoMarkersRef = useRef<Map<string, google.maps.marker.AdvancedMarkerElement>>(new Map());
 
   const AdvancedMarkerElementRef = useRef<typeof google.maps.marker.AdvancedMarkerElement | null>(null);
   const hostMapDivRef = useRef<HTMLDivElement>(null);
@@ -355,6 +358,36 @@ export default function DiscoverClient({ session }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid, firebaseReady]);
 
+  // ── 5-minute GPS location refresh interval ────────────────────────────────
+  useEffect(() => {
+    if (!firebaseReady || !("geolocation" in navigator)) return;
+    const id = setInterval(() => {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          setUserLocation(loc);
+          if (userMarkerRef.current) userMarkerRef.current.position = loc;
+          upsertUser(uid, {
+            displayName: user.name ?? "Anonymous",
+            photoURL: user.image ?? "",
+            location: loc,
+          }).catch(() => {});
+        },
+        () => {},
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    }, 5 * 60 * 1000);
+    return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firebaseReady]);
+
+  // ── Subscribe to squad photos for map markers ─────────────────────────────
+  useEffect(() => {
+    if (!firebaseReady || !mySquad) return;
+    return subscribeToSquadPhotos(mySquad.id, setSquadPhotos);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firebaseReady, mySquad?.id]);
+
   // ── Request notification permission on mount ─────────────────────────────
   useEffect(() => {
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
@@ -422,6 +455,59 @@ export default function DiscoverClient({ session }: Props) {
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photoDrops, mapInitialized]);
+
+  // ── Squad photo map markers ───────────────────────────────────────────────
+  useEffect(() => {
+    const map = googleMapRef.current;
+    const AME = AdvancedMarkerElementRef.current;
+    if (!map || !AME) return;
+
+    const currentIds = new Set(squadPhotos.map((p) => p.id));
+    squadPhotoMarkersRef.current.forEach((marker, id) => {
+      if (!currentIds.has(id)) { (marker as any).map = null; squadPhotoMarkersRef.current.delete(id); }
+    });
+
+    squadPhotos.forEach((photo) => {
+      if (squadPhotoMarkersRef.current.has(photo.id)) return;
+      const wrap = document.createElement("div");
+      wrap.style.cssText = "display:flex;flex-direction:column;align-items:center;cursor:pointer;";
+      wrap.innerHTML = `
+        <div style="background:#005b78;border:3px solid #7ed4fd;box-shadow:4px 4px 0 #005b78;overflow:hidden;max-width:140px;">
+          <img src="${photo.imageURL}" style="width:140px;height:80px;object-fit:cover;display:block;" />
+          <div style="padding:4px 8px;">
+            <div style="color:#7ed4fd;font-size:8px;font-weight:800;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">📸 ${photo.displayName}</div>
+          </div>
+        </div>
+        <div style="width:2px;height:10px;background:#7ed4fd;"></div>
+        <div style="width:6px;height:3px;background:#7ed4fd;opacity:0.6;border-radius:999px;"></div>`;
+      const marker = new AME({ map, position: photo.location, content: wrap, zIndex: 9 });
+      wrap.addEventListener("click", () => {
+        setSelectedPhotoDrop({
+          id: photo.id, uid: photo.uid, displayName: photo.displayName,
+          photoURL: photo.userPhotoURL, imageURL: photo.imageURL,
+          storagePath: photo.storagePath, location: photo.location,
+          caption: photo.caption, createdAt: photo.createdAt,
+          expiresAt: photo.createdAt,
+        });
+      });
+      squadPhotoMarkersRef.current.set(photo.id, marker);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [squadPhotos, mapInitialized]);
+
+  // ── Browser notification on incoming call ────────────────────────────────
+  useEffect(() => {
+    if (!incomingCall) return;
+    if (Notification.permission === "granted") {
+      try {
+        new Notification("📞 INCOMING CALL", {
+          body: `${incomingCall.callerName} is calling you`,
+          icon: "/icons/icon-192x192.png",
+        });
+      } catch { /* ignore */ }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incomingCall?.id]);
 
   // ── Treasure hunt hint markers ─────────────────────────────────────────────
   useEffect(() => {
@@ -558,6 +644,7 @@ export default function DiscoverClient({ session }: Props) {
 
     const usersWithLoc = users.filter((u) => u.location);
     const currentEmails = new Set(usersWithLoc.map((u) => u.email));
+    const nowMs = Date.now();
 
     // Remove stale markers
     userLocMarkerMapRef.current.forEach((marker, email) => {
@@ -567,24 +654,30 @@ export default function DiscoverClient({ session }: Props) {
       }
     });
 
-    // Add or update markers
+    // Always recreate markers to reflect updated LIVE status
     usersWithLoc.forEach((person) => {
       if (!person.location) return;
       const existing = userLocMarkerMapRef.current.get(person.email);
       if (existing) {
-        existing.position = person.location;
-        return;
+        (existing as any).map = null;
+        userLocMarkerMapRef.current.delete(person.email);
       }
 
+      const lastSeenMs = person.lastSeen?.toMillis?.() ?? 0;
+      const isLive = nowMs - lastSeenMs < 6 * 60 * 1000; // seen within 6 min
       const initial = (person.displayName || "?").charAt(0).toUpperCase();
+
       const el = document.createElement("div");
       el.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:0;";
       el.innerHTML = `
-        <div style="position:relative;width:40px;height:40px;border-radius:50%;border:3px solid #1b1b1e;box-shadow:3px 3px 0 #1b1b1e;overflow:hidden;background:#ffd8e7;flex-shrink:0;">
-          ${person.photoURL
-            ? `<img src="${person.photoURL}" style="width:100%;height:100%;object-fit:cover;" />`
-            : `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:#9f376f;font-family:var(--font-bricolage),'Bricolage Grotesque',sans-serif;">${initial}</div>`
-          }
+        <div style="position:relative;display:flex;flex-direction:column;align-items:center;">
+          ${isLive ? `<div style="background:#4caf50;color:white;font-size:7px;font-weight:900;text-transform:uppercase;padding:1px 5px;border:1.5px solid #1b1b1e;letter-spacing:0.05em;margin-bottom:2px;">LIVE</div>` : ""}
+          <div style="position:relative;width:40px;height:40px;border-radius:50%;border:3px solid ${isLive ? "#4caf50" : "#1b1b1e"};box-shadow:3px 3px 0 ${isLive ? "#4caf50" : "#1b1b1e"};overflow:hidden;background:#ffd8e7;flex-shrink:0;">
+            ${person.photoURL
+              ? `<img src="${person.photoURL}" style="width:100%;height:100%;object-fit:cover;" />`
+              : `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:#9f376f;font-family:var(--font-bricolage),'Bricolage Grotesque',sans-serif;">${initial}</div>`
+            }
+          </div>
         </div>
         <div style="width:3px;height:10px;background:#1b1b1e;"></div>
         <div style="width:8px;height:4px;background:#1b1b1e;opacity:0.35;border-radius:999px;"></div>`;
@@ -948,8 +1041,7 @@ export default function DiscoverClient({ session }: Props) {
             { icon: "person_search", label: "Recruits", key: "recruits" },
             { icon: "diversity_3", label: "Friends", key: "friends" },
             { icon: "article", label: "Intel", key: "intel" },
-            { icon: "explore", label: "HUNT", key: "hunt" },
-            { icon: "photo_camera", label: "CHALLENGES", key: "challenge" },
+            { icon: "explore", label: "EXPLORE", key: "explore" },
             { icon: "leaderboard", label: "LEADERBOARD", key: "leaderboard" },
             { icon: "storefront", label: "STORE", key: "store" },
           ].map((item) => {
@@ -1112,6 +1204,7 @@ export default function DiscoverClient({ session }: Props) {
               uid={uid}
               displayName={user.name ?? "Anonymous"}
               photoURL={user.image ?? ""}
+              userLocation={userLocation}
               onVideoCall={(_squadId) => {
                 if (!mySquad) return;
                 setWebRTCCall({ theirUid: "", theirName: "SQUAD", mode: "caller" });
@@ -1158,18 +1251,12 @@ export default function DiscoverClient({ session }: Props) {
           </div>
         )}
 
-        {/* Treasure Hunt panel */}
-        {activeNav === "hunt" && (
+        {/* Explore panel (Hunts + Challenges) */}
+        {activeNav === "explore" && !guessMode && (
           <div className="discover-overlay-panel">
-            <TreasureHuntPanel uid={uid} userLocation={userLocation} />
-          </div>
-        )}
-
-        {/* Photo Challenges panel */}
-        {activeNav === "challenge" && !guessMode && (
-          <div className="discover-overlay-panel" style={{ position: "relative" }}>
-            <PhotoChallengePanel
+            <ExplorePanel
               uid={uid}
+              userLocation={userLocation}
               userPoints={userProfile?.points ?? 0}
               onStartGuess={(challenge) => {
                 setGuessMode({ challenge });
@@ -1196,8 +1283,8 @@ export default function DiscoverClient({ session }: Props) {
         {/* Google Map — kept mounted for Google Maps lifecycle, hidden when overlay panels are active */}
         {(() => {
           const panelActive = (activeNav === "recruits" || activeNav === "kyc" || activeNav === "intel" ||
-            activeNav === "friends" || activeNav === "hunt" || activeNav === "leaderboard" ||
-            activeNav === "store" || (activeNav === "challenge" && !guessMode) ||
+            activeNav === "friends" || activeNav === "leaderboard" ||
+            activeNav === "store" || (activeNav === "explore" && !guessMode) ||
             (activeNav === "squads" && !!mySquad && kycApproved));
           return (
             <div
@@ -1232,7 +1319,7 @@ export default function DiscoverClient({ session }: Props) {
                 <p style={{ color: "#ffe24c", fontWeight: 800, fontSize: 11, textTransform: "uppercase" }}>WHERE WAS THIS TAKEN?</p>
                 <p style={{ color: "#aaa", fontSize: 10, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Move the map, then drop your pin</p>
               </div>
-              <button onClick={() => { setGuessMode(null); setGuessResult(null); setActiveNav("challenge"); }} style={{ background: "none", border: "none", cursor: "pointer", color: "#aaa", padding: 4, flexShrink: 0 }}>
+              <button onClick={() => { setGuessMode(null); setGuessResult(null); setActiveNav("explore"); }} style={{ background: "none", border: "none", cursor: "pointer", color: "#aaa", padding: 4, flexShrink: 0 }}>
                 <span className="material-symbols-outlined" style={{ fontSize: 20 }}>close</span>
               </button>
             </div>
@@ -1248,7 +1335,7 @@ export default function DiscoverClient({ session }: Props) {
                     {guessResult.isCorrect ? "You earned +10 points!" : "Better luck next time!"}
                   </p>
                   <button
-                    onClick={() => { setGuessMode(null); setGuessResult(null); setActiveNav("challenge"); }}
+                    onClick={() => { setGuessMode(null); setGuessResult(null); setActiveNav("explore"); }}
                     style={{ padding: "10px 24px", background: "#9f376f", color: "white", border: "2px solid #1b1b1e", fontWeight: 800, fontSize: 12, textTransform: "uppercase", cursor: "pointer", boxShadow: "3px 3px 0 #1b1b1e", fontFamily: "inherit" }}
                   >
                     BACK TO CHALLENGES
@@ -1275,7 +1362,7 @@ export default function DiscoverClient({ session }: Props) {
         )}
 
         {/* Loading overlay */}
-        {!mapsReady && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "hunt" && activeNav !== "leaderboard" && activeNav !== "store" && !(activeNav === "challenge" && !guessMode) && !(activeNav === "squads" && !!mySquad && kycApproved) && (
+        {!mapsReady && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "leaderboard" && activeNav !== "store" && !(activeNav === "explore" && !guessMode) && !(activeNav === "squads" && !!mySquad && kycApproved) && (
           <div
             style={{
               position: "absolute", inset: 0,
@@ -1308,7 +1395,7 @@ export default function DiscoverClient({ session }: Props) {
         )}
 
         {/* Location denied notice */}
-        {locationDenied && !guessMode && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "hunt" && activeNav !== "leaderboard" && activeNav !== "store" && !(activeNav === "challenge" && !guessMode) && !(activeNav === "squads" && !!mySquad && kycApproved) && (
+        {locationDenied && !guessMode && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "leaderboard" && activeNav !== "store" && !(activeNav === "explore" && !guessMode) && !(activeNav === "squads" && !!mySquad && kycApproved) && (
           <div
             style={{
               position: "absolute", top: 16, left: "50%",
@@ -1345,7 +1432,7 @@ export default function DiscoverClient({ session }: Props) {
         )}
 
         {/* ── RIGHT OVERLAY PANELS ──────────────────────────────────────── */}
-        {!guessMode && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "hunt" && activeNav !== "leaderboard" && activeNav !== "store" && activeNav !== "challenge" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
+        {!guessMode && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "leaderboard" && activeNav !== "store" && activeNav !== "explore" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
         <div
           style={{
             position: "absolute", right: 24, top: 24,
@@ -1991,8 +2078,8 @@ export default function DiscoverClient({ session }: Props) {
         {([
           { icon: mySquad ? "chat" : "map", label: mySquad ? "CHAT" : "MAP", key: "squads" },
           { icon: "person_search", label: "RECRUITS", key: "recruits" },
-          { icon: "photo_camera", label: "CHALLENGE", key: "challenge" },
-          { icon: "explore", label: "HUNT", key: "hunt" },
+          { icon: "explore", label: "EXPLORE", key: "explore" },
+          { icon: "leaderboard", label: "RANKS", key: "leaderboard" },
           { icon: "storefront", label: "STORE", key: "store" },
         ] as const).map((item) => {
           const isActive = activeNav === item.key;

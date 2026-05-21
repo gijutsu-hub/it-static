@@ -7,11 +7,14 @@ import {
   setSquadPresence,
   subscribeToSquadPresence,
   subscribeToMyPrivateChats,
+  addSquadPhoto,
   type Squad,
   type ChatMessage,
   type PresenceEntry,
   type PrivateChat,
 } from "@/lib/firestore";
+import { storage } from "@/lib/firebase";
+import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import PrivateGroupChat, { PrivateGroupCreator } from "./PrivateGroupChat";
 
 interface Props {
@@ -19,6 +22,7 @@ interface Props {
   uid: string;
   displayName: string;
   photoURL: string;
+  userLocation: { lat: number; lng: number } | null;
   onVideoCall?: (squadId: string) => void;
 }
 
@@ -123,23 +127,47 @@ function MessageBubble({
         </div>
       )}
       <div style={{ display: "flex", alignItems: "flex-end", gap: 5 }}>
-        <div
-          style={{
-            backgroundColor: isOwn ? "#9f376f" : "#ffffff",
-            color: isOwn ? "white" : "#1b1b1e",
-            border: `2.5px solid #1b1b1e`,
-            padding: "8px 12px",
-            maxWidth: 300,
-            overflowWrap: "anywhere",
-            fontSize: 14,
-            fontWeight: 600,
-            lineHeight: 1.45,
+        {msg.type === "photo" && msg.imageURL ? (
+          <div style={{
+            border: "2.5px solid #1b1b1e",
             borderRadius: isOwn ? "12px 12px 2px 12px" : "12px 12px 12px 2px",
+            overflow: "hidden",
             boxShadow: isOwn ? "3px 3px 0 #3d0025" : "3px 3px 0 #b0b0b0",
-          }}
-        >
-          {renderMentions(msg.text, myDisplayName)}
-        </div>
+            maxWidth: 220,
+          }}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={msg.imageURL} alt="" style={{ width: "100%", display: "block", maxHeight: 200, objectFit: "cover" }} />
+            {(msg.text || msg.locationTag) && (
+              <div style={{ backgroundColor: isOwn ? "#9f376f" : "#ffffff", padding: "6px 10px" }}>
+                {msg.locationTag && (
+                  <p style={{ fontSize: 9, color: isOwn ? "#ffd8e7" : "#006686", fontWeight: 700, marginBottom: msg.text ? 2 : 0, display: "flex", alignItems: "center", gap: 3 }}>
+                    <span className="material-symbols-outlined" style={{ fontSize: 11, fontVariationSettings: "'FILL' 1" }}>location_on</span>
+                    {msg.locationTag.lat.toFixed(4)}, {msg.locationTag.lng.toFixed(4)}
+                  </p>
+                )}
+                {msg.text && <p style={{ fontSize: 12, color: isOwn ? "white" : "#1b1b1e", fontWeight: 600 }}>{msg.text}</p>}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div
+            style={{
+              backgroundColor: isOwn ? "#9f376f" : "#ffffff",
+              color: isOwn ? "white" : "#1b1b1e",
+              border: `2.5px solid #1b1b1e`,
+              padding: "8px 12px",
+              maxWidth: 300,
+              overflowWrap: "anywhere",
+              fontSize: 14,
+              fontWeight: 600,
+              lineHeight: 1.45,
+              borderRadius: isOwn ? "12px 12px 2px 12px" : "12px 12px 12px 2px",
+              boxShadow: isOwn ? "3px 3px 0 #3d0025" : "3px 3px 0 #b0b0b0",
+            }}
+          >
+            {renderMentions(msg.text, myDisplayName)}
+          </div>
+        )}
         <span
           style={{
             fontSize: 9,
@@ -233,7 +261,7 @@ function MemberRow({ entry }: { entry: PresenceEntry }) {
 
 const RATE_LIMIT_MS = 1000;
 
-export default function SquadChat({ squad, uid, displayName, photoURL, onVideoCall }: Props) {
+export default function SquadChat({ squad, uid, displayName, photoURL, userLocation, onVideoCall }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [presence, setPresence] = useState<PresenceEntry[]>([]);
   const [privateChats, setPrivateChats] = useState<PrivateChat[]>([]);
@@ -243,9 +271,14 @@ export default function SquadChat({ squad, uid, displayName, photoURL, onVideoCa
   const [showCreatePrivate, setShowCreatePrivate] = useState(false);
   const [sending, setSending] = useState(false);
   const [showMobileMembers, setShowMobileMembers] = useState(false);
+  const [showPhotoModal, setShowPhotoModal] = useState(false);
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [photoCaption, setPhotoCaption] = useState("");
+  const [photoUploading, setPhotoUploading] = useState(false);
   const lastSentRef = useRef(0);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const photoFileRef = useRef<HTMLInputElement>(null);
 
   // Presence: go online on mount, go offline on unmount/unload
   useEffect(() => {
@@ -284,6 +317,43 @@ export default function SquadChat({ squad, uid, displayName, photoURL, onVideoCa
       setSending(false);
     }
   }, [input, sending, squad.id, uid, displayName, photoURL]);
+
+  async function handleSharePhoto() {
+    if (!photoFile) return;
+    setPhotoUploading(true);
+    try {
+      const path = `squadPhotos/${squad.id}/${uid}/${Date.now()}_${photoFile.name}`;
+      const sRef = storageRef(storage, path);
+      await uploadBytes(sRef, photoFile);
+      const imageURL = await getDownloadURL(sRef);
+      const loc = userLocation ?? undefined;
+      if (loc) {
+        await addSquadPhoto({
+          squadId: squad.id,
+          uid,
+          displayName,
+          userPhotoURL: photoURL,
+          imageURL,
+          storagePath: path,
+          location: loc,
+          caption: photoCaption.trim().slice(0, 150),
+        });
+      }
+      await sendSquadMessage(
+        squad.id,
+        { uid, name: displayName, photoURL },
+        photoCaption.trim().slice(0, 150),
+        { imageURL, locationTag: loc }
+      );
+      setShowPhotoModal(false);
+      setPhotoFile(null);
+      setPhotoCaption("");
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setPhotoUploading(false);
+    }
+  }
 
   const onlinePresence = presence.filter((p) => p.online);
   const offlinePresence = presence.filter((p) => !p.online);
@@ -736,6 +806,32 @@ export default function SquadChat({ squad, uid, displayName, photoURL, onVideoCa
             position: "relative",
           }}
         >
+          {/* Hidden file input for photo upload */}
+          <input
+            type="file"
+            accept="image/*"
+            ref={photoFileRef}
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const f = e.target.files?.[0] ?? null;
+              if (f) { setPhotoFile(f); setShowPhotoModal(true); }
+              e.target.value = "";
+            }}
+          />
+
+          {/* Camera button */}
+          <button
+            onClick={() => photoFileRef.current?.click()}
+            title="Share photo"
+            style={{
+              padding: "10px", backgroundColor: "#7ed4fd", border: "3px solid #1b1b1e",
+              cursor: "pointer", borderRadius: 8, boxShadow: "3px 3px 0 #1b1b1e",
+              flexShrink: 0, display: "flex", alignItems: "center",
+            }}
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: 20, color: "#005b78", fontVariationSettings: "'FILL' 1" }}>add_a_photo</span>
+          </button>
+
           {/* @mention dropdown */}
           {mentionQuery !== null && (
             <div style={{
@@ -858,6 +954,81 @@ export default function SquadChat({ squad, uid, displayName, photoURL, onVideoCa
           photoURL={photoURL}
           onClose={() => setActivePrivateChatId(null)}
         />
+      )}
+
+      {/* ── Photo share modal ─────────────────────────────────────────── */}
+      {showPhotoModal && photoFile && (
+        <div
+          style={{ position: "absolute", inset: 0, backgroundColor: "rgba(0,0,0,0.7)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
+          onClick={() => { if (!photoUploading) { setShowPhotoModal(false); setPhotoFile(null); setPhotoCaption(""); } }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ backgroundColor: "#fbf8fc", border: "4px solid #1b1b1e", boxShadow: "8px 8px 0 #1b1b1e", padding: 20, width: "100%", maxWidth: 380 }}
+          >
+            <p style={{ fontFamily: "var(--font-bricolage,'Bricolage Grotesque',sans-serif)", fontWeight: 900, fontSize: 16, textTransform: "uppercase", marginBottom: 14 }}>
+              📸 SHARE PHOTO
+            </p>
+
+            {/* Preview */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={URL.createObjectURL(photoFile)}
+              alt="preview"
+              style={{ width: "100%", height: 200, objectFit: "cover", border: "2px solid #1b1b1e", marginBottom: 12 }}
+            />
+
+            {/* Location tag */}
+            <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", backgroundColor: userLocation ? "#c8f7c5" : "#ffd8e7", border: "2px solid #1b1b1e", marginBottom: 12 }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 16, color: userLocation ? "#4caf50" : "#ba1a1a", fontVariationSettings: "'FILL' 1" }}>location_on</span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#1b1b1e" }}>
+                {userLocation
+                  ? `Tagged: ${userLocation.lat.toFixed(4)}, ${userLocation.lng.toFixed(4)}`
+                  : "No GPS — location won't be tagged"}
+              </span>
+            </div>
+
+            {/* Caption */}
+            <input
+              type="text"
+              placeholder="Add a caption… (optional)"
+              value={photoCaption}
+              onChange={(e) => setPhotoCaption(e.target.value)}
+              maxLength={150}
+              style={{
+                width: "100%", padding: "10px 12px", border: "2px solid #1b1b1e",
+                fontSize: 13, fontFamily: "inherit", fontWeight: 600,
+                backgroundColor: "#fbf8fc", outline: "none", marginBottom: 14, boxSizing: "border-box",
+              }}
+            />
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={() => { setShowPhotoModal(false); setPhotoFile(null); setPhotoCaption(""); }}
+                disabled={photoUploading}
+                style={{ flex: 1, padding: "10px", border: "2px solid #1b1b1e", backgroundColor: "#fbf8fc", fontWeight: 700, fontSize: 11, textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit" }}
+              >
+                CANCEL
+              </button>
+              <button
+                onClick={handleSharePhoto}
+                disabled={photoUploading}
+                style={{
+                  flex: 2, padding: "10px", border: "3px solid #1b1b1e",
+                  backgroundColor: photoUploading ? "#e4e1e6" : "#9f376f",
+                  color: photoUploading ? "#544249" : "white",
+                  fontWeight: 800, fontSize: 12, textTransform: "uppercase",
+                  cursor: photoUploading ? "not-allowed" : "pointer",
+                  boxShadow: photoUploading ? "none" : "3px 3px 0 #1b1b1e",
+                  fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                }}
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: 16 }}>send</span>
+                {photoUploading ? "SHARING…" : "SHARE TO SQUAD"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

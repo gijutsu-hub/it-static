@@ -472,7 +472,9 @@ export interface ChatMessage {
   senderPhotoURL: string;
   text: string;
   sentAt: Timestamp;
-  type: "text" | "system";
+  type: "text" | "system" | "photo";
+  imageURL?: string;
+  locationTag?: { lat: number; lng: number };
 }
 
 export interface PresenceEntry {
@@ -519,17 +521,20 @@ export function subscribeToSquadMessages(
 export async function sendSquadMessage(
   squadId: string,
   sender: { uid: string; name: string; photoURL: string },
-  rawText: string
+  rawText: string,
+  options?: { imageURL?: string; locationTag?: { lat: number; lng: number } }
 ): Promise<void> {
   const text = sanitizeText(rawText);
-  if (!text) return;
+  if (!text && !options?.imageURL) return;
   await addDoc(collection(db, "squads", squadId, "messages"), {
     senderUid: sender.uid,
     senderName: sender.name,
     senderPhotoURL: sender.photoURL,
-    text,
+    text: text || "",
     sentAt: Timestamp.now(),
-    type: "text",
+    type: options?.imageURL ? "photo" : "text",
+    ...(options?.imageURL ? { imageURL: options.imageURL } : {}),
+    ...(options?.locationTag ? { locationTag: options.locationTag } : {}),
   });
 }
 
@@ -1080,6 +1085,44 @@ export async function savePushSubscription(uid: string, subscription: PushSubscr
 export async function getPushSubscription(uid: string): Promise<PushSubscriptionJSON | null> {
   const snap = await getDoc(doc(db, "pushSubscriptions", uid));
   return snap.exists() ? (snap.data().subscription as PushSubscriptionJSON) : null;
+}
+
+// ── Squad Photos ───────────────────────────────────────────────────────────────
+
+export interface SquadPhoto {
+  id: string;
+  squadId: string;
+  uid: string;
+  displayName: string;
+  userPhotoURL: string;
+  imageURL: string;
+  storagePath: string;
+  location: { lat: number; lng: number };
+  caption: string;
+  createdAt: Timestamp;
+}
+
+export async function addSquadPhoto(data: Omit<SquadPhoto, "id" | "createdAt">): Promise<string> {
+  const ref = await addDoc(collection(db, "squadPhotos"), {
+    ...data,
+    createdAt: Timestamp.now(),
+  });
+  return ref.id;
+}
+
+export function subscribeToSquadPhotos(
+  squadId: string,
+  callback: (photos: SquadPhoto[]) => void
+): () => void {
+  const q = query(
+    collection(db, "squadPhotos"),
+    where("squadId", "==", squadId),
+    orderBy("createdAt", "desc"),
+    limit(50)
+  );
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as SquadPhoto)));
+  }, () => {});
 }
 
 // ── Points ─────────────────────────────────────────────────────────────────────
