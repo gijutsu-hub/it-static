@@ -30,6 +30,7 @@ export interface Squad {
   id: string;
   name: string;
   theme: string;
+  category: string;
   hostUid: string;
   hostName: string;
   hostPhotoURL: string;
@@ -103,6 +104,31 @@ export function subscribeToSquads(
   callback: (squads: Squad[]) => void
 ): () => void {
   const q = query(collection(db, "squads"), where("active", "==", true));
+  return onSnapshot(q, (snap) => {
+    const squads = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Squad));
+    callback(squads);
+  }, () => {});
+}
+
+export async function getSquad(id: string): Promise<Squad | null> {
+  const snap = await getDoc(doc(db, "squads", id));
+  if (!snap.exists()) return null;
+  return { id: snap.id, ...snap.data() } as Squad;
+}
+
+export function subscribeToSquad(
+  id: string,
+  callback: (squad: Squad | null) => void
+): () => void {
+  return onSnapshot(doc(db, "squads", id), (snap) => {
+    callback(snap.exists() ? ({ id: snap.id, ...snap.data() } as Squad) : null);
+  }, () => callback(null));
+}
+
+export function subscribeToAllSquads(
+  callback: (squads: Squad[]) => void
+): () => void {
+  const q = query(collection(db, "squads"), orderBy("createdAt", "desc"));
   return onSnapshot(q, (snap) => {
     const squads = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Squad));
     callback(squads);
@@ -599,5 +625,76 @@ export async function sendPrivateChatMessage(
     text,
     sentAt: Timestamp.now(),
     type: "text",
+  });
+}
+
+// ── Squad Admin ────────────────────────────────────────────────────────────────
+
+export async function deactivateSquad(squadId: string): Promise<void> {
+  await updateDoc(doc(db, "squads", squadId), { active: false });
+}
+
+export async function deleteSquad(squadId: string): Promise<void> {
+  await deleteDoc(doc(db, "squads", squadId));
+}
+
+// ── Tickets / RSVPs ────────────────────────────────────────────────────────────
+
+export interface Ticket {
+  id: string;
+  squadId: string;
+  squadName: string;
+  holderUid: string;
+  holderName: string;
+  holderPhotoURL: string;
+  ticketCode: string;
+  issuedAt: Timestamp;
+  checkedIn: boolean;
+  checkedInAt?: Timestamp;
+}
+
+export async function issueTicket(
+  squadId: string,
+  squadName: string,
+  holder: { uid: string; name: string; photoURL: string }
+): Promise<string> {
+  const code = Math.random().toString(36).substring(2, 10).toUpperCase();
+  const ref = await addDoc(collection(db, "tickets"), {
+    squadId,
+    squadName,
+    holderUid: holder.uid,
+    holderName: holder.name,
+    holderPhotoURL: holder.photoURL,
+    ticketCode: code,
+    issuedAt: Timestamp.now(),
+    checkedIn: false,
+  });
+  return ref.id;
+}
+
+export function subscribeToSquadTickets(
+  squadId: string,
+  callback: (tickets: Ticket[]) => void
+): () => void {
+  const q = query(collection(db, "tickets"), where("squadId", "==", squadId));
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Ticket)));
+  }, () => {});
+}
+
+export function subscribeToMyTickets(
+  uid: string,
+  callback: (tickets: Ticket[]) => void
+): () => void {
+  const q = query(collection(db, "tickets"), where("holderUid", "==", uid));
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Ticket)));
+  }, () => {});
+}
+
+export async function checkInTicket(ticketId: string): Promise<void> {
+  await updateDoc(doc(db, "tickets", ticketId), {
+    checkedIn: true,
+    checkedInAt: Timestamp.now(),
   });
 }

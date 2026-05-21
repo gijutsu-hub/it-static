@@ -19,6 +19,7 @@ interface Props {
   uid: string;
   displayName: string;
   photoURL: string;
+  onVideoCall?: (squadId: string) => void;
 }
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
@@ -210,7 +211,7 @@ function MemberRow({ entry }: { entry: PresenceEntry }) {
 
 const RATE_LIMIT_MS = 1000;
 
-export default function SquadChat({ squad, uid, displayName, photoURL }: Props) {
+export default function SquadChat({ squad, uid, displayName, photoURL, onVideoCall }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [presence, setPresence] = useState<PresenceEntry[]>([]);
   const [privateChats, setPrivateChats] = useState<PrivateChat[]>([]);
@@ -473,6 +474,21 @@ export default function SquadChat({ squad, uid, displayName, photoURL }: Props) 
           >
             # {squad.name}
           </span>
+
+          {/* Video call button */}
+          {onVideoCall && (
+            <button
+              onClick={() => onVideoCall(squad.id)}
+              title="Start video call"
+              style={{
+                background: "none", border: "2px solid #1b1b1e", padding: "4px 8px",
+                cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
+                borderRadius: 4, backgroundColor: "#7ed4fd", flexShrink: 0,
+              }}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: 18, color: "#005b78", fontVariationSettings: "'FILL' 1" }}>videocam</span>
+            </button>
+          )}
 
           {/* Private invite badge (mobile & desktop) */}
           {pendingPrivateChats.length > 0 && (

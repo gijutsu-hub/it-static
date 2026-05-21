@@ -11,6 +11,7 @@ import {
   joinSquad,
   upsertUser,
   subscribeToUserKYCStatus,
+  issueTicket,
   db,
   type Squad,
   type KYCSubmission,
@@ -20,7 +21,11 @@ import { authReady } from "@/lib/firebase";
 import RecruitDirectory from "./RecruitDirectory";
 import KYCFlow from "./KYCFlow";
 import SquadChat from "./SquadChat";
+import IntelPanel from "./IntelPanel";
 import { signOut } from "next-auth/react";
+import QRCode from "qrcode";
+
+const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || "https://itstatic.app";
 
 const MAPS_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!;
 
@@ -41,16 +46,6 @@ function distanceKm(
       Math.sin(dLng / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
-
-const THEMES = [
-  "K-POP VIBES",
-  "TECH TALK",
-  "ROOFTOP BEATS",
-  "URBAN ART",
-  "SKATE CREW",
-  "RAVE SIGNAL",
-  "CHILL ZONE",
-];
 
 const THEME_COLORS: Record<string, string> = {
   "K-POP VIBES": "#ff85c1",
@@ -86,13 +81,6 @@ export default function DiscoverClient({ session }: Props) {
   const [allSquads, setAllSquads] = useState<Squad[]>([]);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [nearbySquads, setNearbySquads] = useState<Squad[]>([]);
-  const [showHostModal, setShowHostModal] = useState(false);
-  const [hostForm, setHostForm] = useState({
-    name: "",
-    theme: THEMES[0],
-    capacity: "10",
-  });
-  const [hosting, setHosting] = useState(false);
   const [activeNav, setActiveNav] = useState<"squads" | "signals" | "intel" | "recruits" | "kyc">(
     "squads"
   );
@@ -105,8 +93,21 @@ export default function DiscoverClient({ session }: Props) {
   const [joining, setJoining] = useState<string | null>(null);
   const [notifPanelOpen, setNotifPanelOpen] = useState(false);
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
+  const [showHostModal, setShowHostModal] = useState(false);
+  const [hostForm, setHostForm] = useState({ name: "", category: "", capacity: "10" });
+  const [hostLocationMode, setHostLocationMode] = useState<"current" | "pick">("current");
+  const [pickedLocation, setPickedLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [hosting, setHosting] = useState(false);
+  const [hostedSquadId, setHostedSquadId] = useState<string | null>(null);
+  const [successQrUrl, setSuccessQrUrl] = useState("");
+  const [copiedEventLink, setCopiedEventLink] = useState(false);
+  const [showVideoCall, setShowVideoCall] = useState(false);
+  const [videoCallSquadId, setVideoCallSquadId] = useState<string | null>(null);
 
   const AdvancedMarkerElementRef = useRef<typeof google.maps.marker.AdvancedMarkerElement | null>(null);
+  const hostMapDivRef = useRef<HTMLDivElement>(null);
+  const hostGoogleMapRef = useRef<google.maps.Map | null>(null);
+  const hostPickerMarkerRef = useRef<google.maps.marker.AdvancedMarkerElement | null>(null);
 
   const notifRef = useRef<HTMLDivElement>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
@@ -425,6 +426,12 @@ export default function DiscoverClient({ session }: Props) {
     setJoining(squad.id);
     try {
       await joinSquad(squad.id, uid);
+      // Issue ticket on successful join
+      await issueTicket(squad.id, squad.name, {
+        uid,
+        name: user.name ?? "Anonymous",
+        photoURL: user.image ?? "",
+      }).catch(() => {});
     } catch (e) {
       console.error(e);
     } finally {
@@ -433,35 +440,41 @@ export default function DiscoverClient({ session }: Props) {
     }
   }
 
-  async function handleHostParty() {
-    if (!userLocation || !hostForm.name.trim()) return;
+  const totalActiveNodes = allSquads.reduce(
+    (acc, s) => acc + (s.memberUids?.length ?? 0),
+    0
+  );
+
+  const SQUAD_THEMES = Object.keys(THEME_COLORS);
+
+  async function handleHostSquad() {
+    if (!hostForm.name.trim() || !hostForm.category) return;
+    const loc = userLocation ?? { lat: 1.3521, lng: 103.8198 };
     setHosting(true);
     try {
-      await createSquad({
+      const squadId = await createSquad({
         name: hostForm.name.trim().toUpperCase(),
-        theme: hostForm.theme,
+        theme: hostForm.category,
+        category: hostForm.category,
         hostUid: uid,
         hostName: user.name ?? "Anonymous",
         hostPhotoURL: user.image ?? "",
-        location: userLocation,
-        address: "Your Location",
-        capacity: Math.max(2, parseInt(hostForm.capacity) || 10),
+        location: loc,
+        address: "",
+        capacity: parseInt(hostForm.capacity) || 10,
         memberUids: [uid],
         active: true,
       });
-      setShowHostModal(false);
-      setHostForm({ name: "", theme: THEMES[0], capacity: "10" });
+      setHostedSquadId(squadId);
+      const url = `${BASE_URL}/event/${squadId}`;
+      const qrUrl = await QRCode.toDataURL(url, { width: 200, margin: 1 });
+      setSuccessQrUrl(qrUrl);
     } catch (e) {
       console.error(e);
     } finally {
       setHosting(false);
     }
   }
-
-  const totalActiveNodes = allSquads.reduce(
-    (acc, s) => acc + (s.memberUids?.length ?? 0),
-    0
-  );
 
   return (
     <div
@@ -658,7 +671,6 @@ export default function DiscoverClient({ session }: Props) {
             { icon: mySquad ? "chat" : "groups", label: mySquad ? "SQUAD CHAT" : "Squads", key: "squads" },
             { icon: "fingerprint", label: "VERIFY ID", key: "kyc" },
             { icon: "person_search", label: "Recruits", key: "recruits" },
-            { icon: "celebration", label: "Host Party", key: "host" },
             { icon: "sensors", label: "Signals", key: "signals" },
             { icon: "article", label: "Intel", key: "intel" },
           ].map((item) => {
@@ -699,8 +711,7 @@ export default function DiscoverClient({ session }: Props) {
                 disabled={isLocked}
                 onClick={() => {
                   if (isLocked) return;
-                  if (item.key === "host") setShowHostModal(true);
-                  else setActiveNav(item.key as typeof activeNav);
+                  setActiveNav(item.key as typeof activeNav);
                 }}
                 style={{
                   display: "flex", alignItems: "center", gap: 12,
@@ -797,28 +808,6 @@ export default function DiscoverClient({ session }: Props) {
             </div>
           </div>
 
-          <button
-            onClick={() => setShowHostModal(true)}
-            style={{
-              width: "100%", marginTop: 24,
-              backgroundColor: "#c7ad07", border: "4px solid #1b1b1e",
-              boxShadow: "6px 6px 0 #1b1b1e", padding: "14px 24px",
-              fontFamily: "var(--font-bricolage),'Bricolage Grotesque',sans-serif",
-              fontSize: 18, fontWeight: 800, textTransform: "uppercase",
-              cursor: "pointer", letterSpacing: "-0.01em",
-              transition: "transform 0.1s, box-shadow 0.1s",
-            }}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.transform = "translate(2px,2px)";
-              (e.currentTarget as HTMLButtonElement).style.boxShadow = "4px 4px 0 #1b1b1e";
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.transform = "";
-              (e.currentTarget as HTMLButtonElement).style.boxShadow = "6px 6px 0 #1b1b1e";
-            }}
-          >
-            DEPLOY SIGNAL
-          </button>
         </div>
       </aside>
 
@@ -838,6 +827,7 @@ export default function DiscoverClient({ session }: Props) {
               uid={uid}
               displayName={user.name ?? "Anonymous"}
               photoURL={user.image ?? ""}
+              onVideoCall={(squadId) => { setVideoCallSquadId(squadId); setShowVideoCall(true); }}
             />
           </div>
         )}
@@ -846,6 +836,13 @@ export default function DiscoverClient({ session }: Props) {
         {activeNav === "recruits" && (
           <div className="discover-overlay-panel">
             <RecruitDirectory uid={uid} />
+          </div>
+        )}
+
+        {/* Intel Panel — shown when intel tab is active */}
+        {activeNav === "intel" && (
+          <div className="discover-overlay-panel">
+            <IntelPanel uid={uid} />
           </div>
         )}
 
@@ -869,12 +866,14 @@ export default function DiscoverClient({ session }: Props) {
             visibility:
               activeNav === "recruits" ||
               activeNav === "kyc" ||
+              activeNav === "intel" ||
               (activeNav === "squads" && !!mySquad && kycApproved)
                 ? "hidden"
                 : "visible",
             pointerEvents:
               activeNav === "recruits" ||
               activeNav === "kyc" ||
+              activeNav === "intel" ||
               (activeNav === "squads" && !!mySquad && kycApproved)
                 ? "none"
                 : "auto",
@@ -882,7 +881,7 @@ export default function DiscoverClient({ session }: Props) {
         />
 
         {/* Loading overlay */}
-        {!mapsReady && activeNav !== "recruits" && activeNav !== "kyc" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
+        {!mapsReady && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
           <div
             style={{
               position: "absolute", inset: 0,
@@ -915,7 +914,7 @@ export default function DiscoverClient({ session }: Props) {
         )}
 
         {/* Location denied notice */}
-        {locationDenied && activeNav !== "recruits" && activeNav !== "kyc" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
+        {locationDenied && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
           <div
             style={{
               position: "absolute", top: 16, left: "50%",
@@ -935,7 +934,7 @@ export default function DiscoverClient({ session }: Props) {
         )}
 
         {/* ── RIGHT OVERLAY PANELS ──────────────────────────────────────── */}
-        {activeNav !== "recruits" && activeNav !== "kyc" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
+        {activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
         <div
           style={{
             position: "absolute", right: 24, top: 24,
@@ -1014,7 +1013,7 @@ export default function DiscoverClient({ session }: Props) {
               </>
             ) : (
               <>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
                   {user.image && (
                     <img
                       src={user.image}
@@ -1023,30 +1022,33 @@ export default function DiscoverClient({ session }: Props) {
                     />
                   )}
                   <div>
-                    <p style={{ fontWeight: 700, fontSize: 13 }}>
-                      {user.name} (You)
-                    </p>
-                    <span style={{ fontSize: 10, color: "#9f376f", fontWeight: 800, textTransform: "uppercase" }}>
-                      Host
+                    <p style={{ fontWeight: 700, fontSize: 13 }}>{user.name}</p>
+                    <span style={{ fontSize: 10, color: "#006686", fontWeight: 800, textTransform: "uppercase", display: "flex", alignItems: "center", gap: 4 }}>
+                      <span style={{ width: 6, height: 6, borderRadius: "50%", backgroundColor: "#4caf50", display: "inline-block" }} />
+                      SCOUTING
                     </span>
                   </div>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, opacity: 0.6 }}>
-                  <div
-                    style={{
-                      width: 40, height: 40, borderRadius: "50%",
-                      border: "2px dashed #1b1b1e",
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                    }}
-                  >
-                    <span className="material-symbols-outlined" style={{ color: "#1b1b1e", fontSize: 20 }}>
-                      add
-                    </span>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, opacity: 0.5, marginBottom: 14 }}>
+                  <div style={{ width: 36, height: 36, borderRadius: "50%", border: "2px dashed #1b1b1e", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <span className="material-symbols-outlined" style={{ color: "#1b1b1e", fontSize: 18 }}>add</span>
                   </div>
-                  <p style={{ fontWeight: 600, fontSize: 13, fontStyle: "italic" }}>
-                    Waiting for crew...
-                  </p>
+                  <p style={{ fontWeight: 600, fontSize: 12, fontStyle: "italic", color: "#544249" }}>No squad yet — join or host</p>
                 </div>
+                <button
+                  onClick={() => { setShowHostModal(true); setHostedSquadId(null); setSuccessQrUrl(""); setHostForm({ name: "", category: "", capacity: "10" }); }}
+                  style={{
+                    width: "100%", padding: "10px 12px", backgroundColor: "#ffe24c",
+                    border: "2.5px solid #1b1b1e", borderRadius: 6, cursor: "pointer",
+                    fontWeight: 800, fontSize: 12, textTransform: "uppercase",
+                    fontFamily: "inherit", boxShadow: "3px 3px 0 #1b1b1e",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                    color: "#1b1b1e",
+                  }}
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: 16 }}>add_location_alt</span>
+                  HOST A SQUAD
+                </button>
               </>
             )}
           </div>
@@ -1076,43 +1078,6 @@ export default function DiscoverClient({ session }: Props) {
         )}
       </main>
 
-      {/* ── FAB (≥ 640px only — phone uses bottom nav HOST button) ────────── */}
-      {kycApproved && <div className="hidden sm:block"><button
-        onClick={() => setShowHostModal(true)}
-        style={{
-          position: "fixed", bottom: 40, right: 40,
-          backgroundColor: "#ff85c1", border: "4px solid #1b1b1e",
-          padding: "28px 32px", borderRadius: "50%",
-          boxShadow: "6px 6px 0 #1b1b1e", cursor: "pointer",
-          zIndex: 50, display: "flex", flexDirection: "column",
-          alignItems: "center", gap: 6,
-          transition: "transform 0.1s, box-shadow 0.1s",
-        }}
-        onMouseEnter={(e) => {
-          (e.currentTarget as HTMLButtonElement).style.transform = "translate(3px,3px)";
-          (e.currentTarget as HTMLButtonElement).style.boxShadow = "3px 3px 0 #1b1b1e";
-        }}
-        onMouseLeave={(e) => {
-          (e.currentTarget as HTMLButtonElement).style.transform = "";
-          (e.currentTarget as HTMLButtonElement).style.boxShadow = "6px 6px 0 #1b1b1e";
-        }}
-      >
-        <span
-          className="material-symbols-outlined"
-          style={{ fontSize: 44, color: "#1b1b1e", fontVariationSettings: "'FILL' 1" }}
-        >
-          celebration
-        </span>
-        <span
-          style={{
-            fontFamily: "var(--font-bricolage),'Bricolage Grotesque',sans-serif",
-            fontSize: 12, fontWeight: 800, textTransform: "uppercase",
-            color: "#1b1b1e", whiteSpace: "nowrap", letterSpacing: "-0.01em",
-          }}
-        >
-          Host Your Own Party
-        </span>
-      </button></div>}
 
       {/* ── SQUAD DETAIL MODAL (click marker / sidebar) ───────────────────── */}
       {selectedSquad && (
@@ -1170,7 +1135,7 @@ export default function DiscoverClient({ session }: Props) {
               />
             </div>
 
-            <div style={{ display: "flex", gap: 12 }}>
+            <div style={{ display: "flex", gap: 12, marginBottom: 10 }}>
               <button
                 onClick={() => setSelectedSquad(null)}
                 style={{
@@ -1209,169 +1174,243 @@ export default function DiscoverClient({ session }: Props) {
                   : "JOIN SQUAD"}
               </button>
             </div>
+            {selectedSquad.memberUids?.includes(uid) && (
+              <button
+                onClick={() => { setVideoCallSquadId(selectedSquad.id); setShowVideoCall(true); setSelectedSquad(null); }}
+                style={{
+                  width: "100%", border: "3px solid #1b1b1e", padding: "12px",
+                  fontWeight: 700, fontSize: 13, textTransform: "uppercase",
+                  cursor: "pointer", backgroundColor: "#7ed4fd", color: "#1b1b1e",
+                  boxShadow: "4px 4px 0 #1b1b1e", fontFamily: "inherit",
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                }}
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: 18, fontVariationSettings: "'FILL' 1" }}>videocam</span>
+                START VIDEO CALL
+              </button>
+            )}
           </div>
         </div>
       )}
 
-      {/* ── HOST PARTY MODAL ─────────────────────────────────────────────── */}
+      {/* ── VIDEO CALL OVERLAY ───────────────────────────────────────────── */}
+      {showVideoCall && videoCallSquadId && (
+        <div
+          style={{
+            position: "fixed", inset: 0, zIndex: 200,
+            backgroundColor: "#0a0a0d", display: "flex", flexDirection: "column",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 20px", backgroundColor: "#1b1b1e", borderBottom: "3px solid #9f376f" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 20, color: "#ff85c1", fontVariationSettings: "'FILL' 1" }}>videocam</span>
+              <span style={{ fontFamily: "var(--font-bricolage),'Bricolage Grotesque',sans-serif", fontWeight: 800, fontSize: 14, textTransform: "uppercase", color: "#fbf8fc" }}>
+                SQUAD VIDEO CALL
+              </span>
+              <span style={{ fontSize: 10, fontWeight: 700, color: "#7ed4fd", textTransform: "uppercase", border: "1.5px solid #7ed4fd", padding: "2px 8px" }}>LIVE</span>
+            </div>
+            <button
+              onClick={() => setShowVideoCall(false)}
+              style={{ background: "#ba1a1a", color: "white", border: "2px solid #fbf8fc", padding: "6px 14px", fontWeight: 700, fontSize: 11, textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 6 }}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: 14 }}>call_end</span>
+              LEAVE
+            </button>
+          </div>
+          <iframe
+            allow="camera; microphone; fullscreen; display-capture; autoplay"
+            src={`https://meet.jit.si/itstatic-${videoCallSquadId}#userInfo.displayName=${encodeURIComponent(user.name ?? "AGENT")}&userInfo.avatarUrl=${encodeURIComponent(user.image ?? "")}&config.prejoinPageEnabled=false`}
+            style={{ flex: 1, border: "none", width: "100%" }}
+          />
+        </div>
+      )}
+
+      {/* ── HOST A SQUAD MODAL ─────────────────────────────────────────────── */}
       {showHostModal && (
         <div
           style={{
-            position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.6)",
-            zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center",
-            padding: 24,
+            position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.65)",
+            zIndex: 110, display: "flex", alignItems: "center", justifyContent: "center",
+            padding: 20,
           }}
-          onClick={() => setShowHostModal(false)}
+          onClick={() => { if (!hosting) { setShowHostModal(false); } }}
         >
           <div
             onClick={(e) => e.stopPropagation()}
             style={{
               backgroundColor: "#fbf8fc", border: "4px solid #1b1b1e",
-              boxShadow: "8px 8px 0 #1b1b1e",
-              maxWidth: 480, width: "100%", borderRadius: 16,
-              maxHeight: "calc(100vh - 48px)", overflowY: "auto",
-              display: "flex", flexDirection: "column",
+              boxShadow: "10px 10px 0 #1b1b1e", padding: 32,
+              maxWidth: 460, width: "100%", borderRadius: 16,
+              maxHeight: "90vh", overflowY: "auto",
             }}
           >
-            <div style={{ padding: 40 }}>
-            <h2
-              style={{
-                fontFamily: "var(--font-bricolage),'Bricolage Grotesque',sans-serif",
-                fontSize: 30, fontWeight: 800, textTransform: "uppercase",
-                marginBottom: 24, color: "#9f376f",
-              }}
-            >
-              HOST A SQUAD
-            </h2>
+            {!hostedSquadId ? (
+              <>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 24 }}>
+                  <div>
+                    <span style={{ display: "inline-block", background: "#ffe24c", border: "2px solid #1b1b1e", padding: "3px 10px", fontSize: 10, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>
+                      DEPLOY SQUAD
+                    </span>
+                    <h2 style={{ fontFamily: "var(--font-bricolage),'Bricolage Grotesque',sans-serif", fontSize: 26, fontWeight: 800, textTransform: "uppercase", color: "#1b1b1e", lineHeight: 1 }}>
+                      HOST A SQUAD
+                    </h2>
+                  </div>
+                  <button onClick={() => setShowHostModal(false)} style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}>
+                    <span className="material-symbols-outlined" style={{ fontSize: 24, color: "#544249" }}>close</span>
+                  </button>
+                </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              <div>
-                <label
+                {/* Squad Name */}
+                <div style={{ marginBottom: 16 }}>
+                  <label style={{ display: "block", fontWeight: 700, fontSize: 11, textTransform: "uppercase", marginBottom: 6, color: "#1b1b1e", letterSpacing: "0.04em" }}>
+                    SQUAD NAME *
+                  </label>
+                  <input
+                    type="text"
+                    value={hostForm.name}
+                    onChange={(e) => setHostForm(f => ({ ...f, name: e.target.value }))}
+                    placeholder="E.G. ROOFTOP REBELS"
+                    maxLength={40}
+                    style={{
+                      width: "100%", padding: "12px 14px", border: "3px solid #1b1b1e",
+                      fontSize: 14, fontWeight: 700, fontFamily: "inherit",
+                      backgroundColor: "#fbf8fc", outline: "none", boxSizing: "border-box",
+                      textTransform: "uppercase", letterSpacing: "0.03em",
+                    }}
+                  />
+                </div>
+
+                {/* Theme */}
+                <div style={{ marginBottom: 16 }}>
+                  <label style={{ display: "block", fontWeight: 700, fontSize: 11, textTransform: "uppercase", marginBottom: 6, color: "#1b1b1e", letterSpacing: "0.04em" }}>
+                    THEME / VIBE *
+                  </label>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {SQUAD_THEMES.map(t => {
+                      const bg = THEME_COLORS[t] ?? "#ffe24c";
+                      const selected = hostForm.category === t;
+                      return (
+                        <button
+                          key={t}
+                          onClick={() => setHostForm(f => ({ ...f, category: t }))}
+                          style={{
+                            padding: "6px 14px", border: "2.5px solid #1b1b1e", fontWeight: 700, fontSize: 11,
+                            cursor: "pointer", fontFamily: "inherit", textTransform: "uppercase",
+                            backgroundColor: selected ? "#1b1b1e" : bg,
+                            color: selected ? "#fbf8fc" : "#1b1b1e",
+                            boxShadow: selected ? "none" : "2px 2px 0 #1b1b1e",
+                            letterSpacing: "0.04em",
+                          }}
+                        >
+                          {t}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Capacity */}
+                <div style={{ marginBottom: 20 }}>
+                  <label style={{ display: "block", fontWeight: 700, fontSize: 11, textTransform: "uppercase", marginBottom: 6, color: "#1b1b1e", letterSpacing: "0.04em" }}>
+                    MAX CREW SIZE
+                  </label>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    {["5", "10", "15", "20", "30"].map(cap => (
+                      <button
+                        key={cap}
+                        onClick={() => setHostForm(f => ({ ...f, capacity: cap }))}
+                        style={{
+                          flex: 1, padding: "10px 0", border: "2.5px solid #1b1b1e", fontWeight: 800, fontSize: 14,
+                          cursor: "pointer", fontFamily: "inherit",
+                          backgroundColor: hostForm.capacity === cap ? "#1b1b1e" : "#fbf8fc",
+                          color: hostForm.capacity === cap ? "#fbf8fc" : "#1b1b1e",
+                          boxShadow: hostForm.capacity === cap ? "none" : "2px 2px 0 #1b1b1e",
+                        }}
+                      >
+                        {cap}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Location note */}
+                <div style={{ padding: "10px 14px", backgroundColor: "#c0e8ff", border: "2px solid #1b1b1e", marginBottom: 24, display: "flex", alignItems: "center", gap: 8, borderRadius: 4 }}>
+                  <span className="material-symbols-outlined" style={{ fontSize: 18, color: "#006686", flexShrink: 0, fontVariationSettings: "'FILL' 1" }}>location_on</span>
+                  <p style={{ fontSize: 12, fontWeight: 600, color: "#005b78" }}>
+                    {userLocation ? "Will use your current GPS location" : "GPS unavailable — using default area"}
+                  </p>
+                </div>
+
+                <button
+                  onClick={handleHostSquad}
+                  disabled={hosting || !hostForm.name.trim() || !hostForm.category}
                   style={{
-                    display: "block", fontWeight: 700, fontSize: 11,
-                    textTransform: "uppercase", marginBottom: 6,
-                    color: "#544249", letterSpacing: "0.04em",
+                    width: "100%", padding: "16px", backgroundColor: hosting || !hostForm.name.trim() || !hostForm.category ? "#e4e1e6" : "#9f376f",
+                    color: hosting || !hostForm.name.trim() || !hostForm.category ? "#544249" : "white",
+                    border: "3px solid #1b1b1e", fontWeight: 800, fontSize: 15, textTransform: "uppercase",
+                    cursor: hosting || !hostForm.name.trim() || !hostForm.category ? "not-allowed" : "pointer",
+                    boxShadow: "5px 5px 0 #1b1b1e", fontFamily: "inherit",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
+                    letterSpacing: "0.04em",
                   }}
                 >
-                  Squad Name
-                </label>
-                <input
-                  value={hostForm.name}
-                  onChange={(e) =>
-                    setHostForm((f) => ({ ...f, name: e.target.value }))
-                  }
-                  placeholder="e.g. NEON RIDERS"
-                  style={{
-                    width: "100%", border: "3px solid #1b1b1e",
-                    padding: "12px 16px", fontSize: 15, fontWeight: 700,
-                    fontFamily: "inherit", outline: "none",
-                    boxSizing: "border-box", backgroundColor: "#f6f2f7",
-                  }}
-                />
-              </div>
+                  <span className="material-symbols-outlined" style={{ fontSize: 20 }}>add_location_alt</span>
+                  {hosting ? "DEPLOYING..." : "DEPLOY SQUAD"}
+                </button>
+              </>
+            ) : (
+              <>
+                <div style={{ textAlign: "center", marginBottom: 24 }}>
+                  <div style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 64, height: 64, backgroundColor: "#c8f7c5", border: "3px solid #1b1b1e", borderRadius: "50%", marginBottom: 14 }}>
+                    <span className="material-symbols-outlined" style={{ fontSize: 32, color: "#4caf50", fontVariationSettings: "'FILL' 1" }}>check_circle</span>
+                  </div>
+                  <h2 style={{ fontFamily: "var(--font-bricolage),'Bricolage Grotesque',sans-serif", fontSize: 26, fontWeight: 800, textTransform: "uppercase", color: "#1b1b1e", marginBottom: 6 }}>
+                    SQUAD DEPLOYED!
+                  </h2>
+                  <p style={{ fontSize: 13, color: "#544249", fontWeight: 600 }}>Share the QR or link to rally your crew.</p>
+                </div>
 
-              <div>
-                <label
-                  style={{
-                    display: "block", fontWeight: 700, fontSize: 11,
-                    textTransform: "uppercase", marginBottom: 6,
-                    color: "#544249", letterSpacing: "0.04em",
+                {successQrUrl && (
+                  <div style={{ display: "flex", justifyContent: "center", marginBottom: 20 }}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={successQrUrl} alt="QR Code" style={{ width: 160, height: 160, border: "4px solid #1b1b1e", boxShadow: "4px 4px 0 #1b1b1e", imageRendering: "pixelated" }} />
+                  </div>
+                )}
+
+                <button
+                  onClick={async () => {
+                    const url = `${BASE_URL}/event/${hostedSquadId}`;
+                    await navigator.clipboard.writeText(url).catch(() => {});
+                    setCopiedEventLink(true);
+                    setTimeout(() => setCopiedEventLink(false), 2000);
                   }}
-                >
-                  Theme / Vibe
-                </label>
-                <select
-                  value={hostForm.theme}
-                  onChange={(e) =>
-                    setHostForm((f) => ({ ...f, theme: e.target.value }))
-                  }
                   style={{
-                    width: "100%", border: "3px solid #1b1b1e",
-                    padding: "12px 16px", fontSize: 14, fontWeight: 700,
-                    fontFamily: "inherit", outline: "none",
-                    boxSizing: "border-box", backgroundColor: "#f6f2f7",
-                    appearance: "none",
+                    width: "100%", marginBottom: 10, padding: "12px", backgroundColor: "#ffe24c", border: "2.5px solid #1b1b1e",
+                    fontWeight: 700, fontSize: 12, textTransform: "uppercase", cursor: "pointer",
+                    boxShadow: "3px 3px 0 #1b1b1e", fontFamily: "inherit", color: "#1b1b1e",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
                   }}
                 >
-                  {THEMES.map((t) => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
-                  ))}
-                </select>
-              </div>
+                  <span className="material-symbols-outlined" style={{ fontSize: 16 }}>
+                    {copiedEventLink ? "check" : "content_copy"}
+                  </span>
+                  {copiedEventLink ? "LINK COPIED!" : "COPY INVITE LINK"}
+                </button>
 
-              <div>
-                <label
+                <button
+                  onClick={() => { setShowHostModal(false); setActiveNav("squads"); }}
                   style={{
-                    display: "block", fontWeight: 700, fontSize: 11,
-                    textTransform: "uppercase", marginBottom: 6,
-                    color: "#544249", letterSpacing: "0.04em",
+                    width: "100%", padding: "14px", backgroundColor: "#9f376f", color: "white",
+                    border: "3px solid #1b1b1e", fontWeight: 800, fontSize: 14, textTransform: "uppercase",
+                    cursor: "pointer", boxShadow: "5px 5px 0 #1b1b1e", fontFamily: "inherit",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
                   }}
                 >
-                  Max Capacity
-                </label>
-                <input
-                  type="number"
-                  min={2}
-                  max={100}
-                  value={hostForm.capacity}
-                  onChange={(e) =>
-                    setHostForm((f) => ({ ...f, capacity: e.target.value }))
-                  }
-                  style={{
-                    width: "100%", border: "3px solid #1b1b1e",
-                    padding: "12px 16px", fontSize: 15, fontWeight: 700,
-                    fontFamily: "inherit", outline: "none",
-                    boxSizing: "border-box", backgroundColor: "#f6f2f7",
-                  }}
-                />
-              </div>
-
-              {!userLocation && (
-                <p style={{ color: "#ba1a1a", fontSize: 13, fontWeight: 600 }}>
-                  ⚠ Enable location access to pin your squad on the map.
-                </p>
-              )}
-
-              <div
-                style={{
-                  backgroundColor: "#ffd8e7", border: "2px solid #1b1b1e",
-                  padding: "10px 14px", borderRadius: 6, fontSize: 12,
-                  fontWeight: 600, color: "#3d0025",
-                }}
-              >
-                📍 Your squad will be pinned at your current location
-              </div>
-            </div>
-
-            <div style={{ display: "flex", gap: 12, marginTop: 24 }}>
-              <button
-                onClick={() => setShowHostModal(false)}
-                style={{
-                  flex: 1, border: "3px solid #1b1b1e", padding: "14px",
-                  fontWeight: 700, fontSize: 13, textTransform: "uppercase",
-                  cursor: "pointer", backgroundColor: "#fbf8fc",
-                  boxShadow: "4px 4px 0 #1b1b1e", fontFamily: "inherit",
-                }}
-              >
-                CANCEL
-              </button>
-              <button
-                onClick={handleHostParty}
-                disabled={!hostForm.name.trim() || !userLocation || hosting}
-                style={{
-                  flex: 2, border: "3px solid #1b1b1e", padding: "14px",
-                  fontWeight: 700, fontSize: 13, textTransform: "uppercase",
-                  cursor: "pointer", backgroundColor: "#9f376f", color: "white",
-                  boxShadow: "4px 4px 0 #1b1b1e", fontFamily: "inherit",
-                  opacity: !hostForm.name.trim() || !userLocation || hosting ? 0.55 : 1,
-                }}
-              >
-                {hosting ? "DEPLOYING..." : "DEPLOY SQUAD"}
-              </button>
-            </div>
-            </div>
+                  <span className="material-symbols-outlined" style={{ fontSize: 18 }}>chat</span>
+                  OPEN SQUAD CHAT
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -1392,17 +1431,16 @@ export default function DiscoverClient({ session }: Props) {
           { icon: mySquad ? "chat" : "map", label: mySquad ? "CHAT" : "MAP", key: "squads" },
           { icon: "person_search", label: "RECRUITS", key: "recruits" },
           { icon: "fingerprint", label: "VERIFY", key: "kyc" },
-          { icon: "celebration", label: "HOST", key: "host" },
+          { icon: "article", label: "INTEL", key: "intel" },
         ] as const).map((item) => {
-          const isActive = activeNav === item.key || (item.key === "host" && showHostModal);
+          const isActive = activeNav === item.key;
           const isLocked = !kycApproved && item.key !== "kyc";
           return (
             <button
               key={item.key}
               onClick={() => {
                 if (isLocked) return;
-                if (item.key === "host") setShowHostModal(true);
-                else setActiveNav(item.key);
+                setActiveNav(item.key);
               }}
               style={{
                 display: "flex", flexDirection: "column", alignItems: "center", gap: 2,

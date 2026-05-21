@@ -6,16 +6,26 @@
     "dev": "next dev --webpack",
     "build": "next build --webpack",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "cap:sync": "npx cap sync",
+    "cap:ios": "npx cap open ios",
+    "cap:android": "npx cap open android",
+    "mobile:build": "next build --webpack && npx cap sync"
   },
   "dependencies": {
+    "@capacitor/android": "^8.3.4",
+    "@capacitor/cli": "^8.3.4",
+    "@capacitor/core": "^8.3.4",
+    "@capacitor/ios": "^8.3.4",
     "@googlemaps/js-api-loader": "^2.0.2",
     "@types/google.maps": "^3.64.1",
+    "@types/qrcode": "^1.5.6",
     "@types/web-push": "^3.6.4",
     "firebase": "^12.13.0",
     "next": "16.2.6",
     "next-auth": "^5.0.0-beta.31",
     "next-pwa": "^5.6.0",
+    "qrcode": "^1.5.4",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "web-push": "^3.6.7"

@@ -1,31 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import {
   subscribeToUsers,
   subscribeToFriendRequests,
   sendFriendRequest,
   acceptFriendRequest,
   rejectFriendRequest,
-  updateUserProfile,
   type UserProfile,
   type FriendRequest,
 } from "@/lib/firestore";
 import { authReady } from "@/lib/firebase";
-
-const INTERESTS = [
-  "K-POP VIBES",
-  "TECH TALK",
-  "ROOFTOP BEATS",
-  "URBAN ART",
-  "SKATE CREW",
-  "RAVE SIGNAL",
-  "CHILL ZONE",
-  "GLITCH ART",
-  "SYNTH-WAVE",
-  "HARD-LINE",
-  "LO-FI",
-];
 
 const INTEREST_COLORS: Record<string, string> = {
   "K-POP VIBES": "#ff85c1",
@@ -41,62 +26,112 @@ const INTEREST_COLORS: Record<string, string> = {
   "LO-FI": "#ffe24c",
 };
 
-const CARD_COLORS = [
-  "#fbf8fc",
-  "#c0e8ff",
-  "#ffe24c",
-  "#ffd8e7",
-  "#fbf8fc",
-  "#c0e8ff",
-];
-
 interface Props {
   uid: string;
 }
 
 type RequestStatus = "none" | "sent" | "received" | "friends";
+type View = "match" | "connections";
+
+function seededRandom(seed: string): number {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) {
+    h = Math.imul(h ^ seed.charCodeAt(i), 2654435761);
+  }
+  h ^= h >>> 16;
+  return Math.abs(h) / 0xffffffff;
+}
+
+function getTimeUntilMidnight(): string {
+  const now = new Date();
+  const midnight = new Date(now);
+  midnight.setDate(midnight.getDate() + 1);
+  midnight.setHours(0, 0, 0, 0);
+  const diff = midnight.getTime() - now.getTime();
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  const s = Math.floor((diff % 60000) / 1000);
+  return `${h}h ${m}m ${s}s`;
+}
+
+function getTodayKey(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function loadPassedToday(uid: string): Set<string> {
+  try {
+    const key = `passed:${getTodayKey()}:${uid}`;
+    const raw = localStorage.getItem(key);
+    return new Set(raw ? JSON.parse(raw) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function savePassedToday(uid: string, passed: Set<string>): void {
+  try {
+    const key = `passed:${getTodayKey()}:${uid}`;
+    localStorage.setItem(key, JSON.stringify([...passed]));
+  } catch { /* */ }
+}
 
 export default function RecruitDirectory({ uid }: Props) {
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [requests, setRequests] = useState<FriendRequest[]>([]);
-  const [sending, setSending] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
   const [accepting, setAccepting] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
-  const [filterInterest, setFilterInterest] = useState<string | null>(null);
-  const [visibleCount, setVisibleCount] = useState(6);
-  const [showEditProfile, setShowEditProfile] = useState(false);
-  const [editForm, setEditForm] = useState({
-    codename: "",
-    bio: "",
-    interests: [] as string[],
-  });
-  const [savingProfile, setSavingProfile] = useState(false);
-  const [dossierUser, setDossierUser] = useState<UserProfile | null>(null);
   const [firebaseReady, setFirebaseReady] = useState(false);
+  const [timeLeft, setTimeLeft] = useState(getTimeUntilMidnight());
+  const [passedUsers, setPassedUsers] = useState<Set<string>>(() => new Set());
+  const [view, setView] = useState<View>("match");
+  const [matchIndex, setMatchIndex] = useState(0);
 
   useEffect(() => {
     authReady.then(() => setFirebaseReady(true));
   }, []);
 
   useEffect(() => {
+    const loaded = loadPassedToday(uid);
+    setPassedUsers(loaded);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+  }, [uid]);
+
+  useEffect(() => {
     if (!firebaseReady) return;
-    const unsub = subscribeToUsers(uid, setUsers);
-    return unsub;
+    return subscribeToUsers(uid, setUsers);
   }, [uid, firebaseReady]);
 
   useEffect(() => {
     if (!firebaseReady) return;
-    const unsub = subscribeToFriendRequests(uid, setRequests);
-    return unsub;
+    return subscribeToFriendRequests(uid, setRequests);
   }, [uid, firebaseReady]);
 
-  function getRequestState(targetUid: string): {
-    status: RequestStatus;
-    requestId?: string;
-  } {
+  useEffect(() => {
+    const interval = setInterval(() => setTimeLeft(getTimeUntilMidnight()), 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Deterministic daily ordering seeded by date+uid, then offset by matchIndex
+  const orderedUsers = useMemo(() => {
+    if (users.length === 0) return [];
+    const today = getTodayKey();
+    return [...users].sort((a, b) => {
+      const ra = seededRandom(`${today}:${uid}:${a.email}`);
+      const rb = seededRandom(`${today}:${uid}:${b.email}`);
+      return ra - rb;
+    });
+  }, [users, uid]);
+
+  const todayQueue = useMemo(
+    () => orderedUsers.filter((u) => !passedUsers.has(u.email)),
+    [orderedUsers, passedUsers]
+  );
+
+  const todayMatch = todayQueue[matchIndex] ?? todayQueue[0] ?? null;
+
+  function getRequestState(targetUid: string): { status: RequestStatus; requestId?: string } {
     const req = requests.find(
-      (r) =>
-        r.participants.includes(targetUid) && r.participants.includes(uid)
+      (r) => r.participants.includes(targetUid) && r.participants.includes(uid)
     );
     if (!req) return { status: "none" };
     if (req.status === "accepted") return { status: "friends", requestId: req.id };
@@ -105,15 +140,34 @@ export default function RecruitDirectory({ uid }: Props) {
     return { status: "received", requestId: req.id };
   }
 
-  async function handleSend(toUid: string) {
-    setSending(toUid);
+  const connections = requests
+    .filter((r) => r.status === "accepted")
+    .map((r) => {
+      const otherUid = r.fromUid === uid ? r.toUid : r.fromUid;
+      return users.find((u) => u.email === otherUid) ?? null;
+    })
+    .filter(Boolean) as UserProfile[];
+
+  const pendingReceived = requests.filter((r) => r.toUid === uid && r.status === "pending");
+
+  async function handleConnect() {
+    if (!todayMatch) return;
+    setSending(true);
     try {
-      await sendFriendRequest(uid, toUid);
+      await sendFriendRequest(uid, todayMatch.email);
     } catch (e) {
       console.error(e);
     } finally {
-      setSending(null);
+      setSending(false);
     }
+  }
+
+  function handlePass() {
+    if (!todayMatch) return;
+    const updated = new Set(passedUsers).add(todayMatch.email);
+    setPassedUsers(updated);
+    savePassedToday(uid, updated);
+    setMatchIndex(0);
   }
 
   async function handleAccept(requestId: string) {
@@ -135,1297 +189,420 @@ export default function RecruitDirectory({ uid }: Props) {
     }
   }
 
-  function getUserStatus(user: UserProfile): {
-    label: string;
-    color: string;
-    animClass: string;
-  } {
-    const now = Date.now();
-    const lastSeen = user.lastSeen?.toMillis() ?? 0;
-    const diff = now - lastSeen;
-    if (diff < 5 * 60 * 1000)
-      return { label: "SYNCED", color: "#c7ad07", animClass: "animate-pulse" };
-    if (diff < 2 * 60 * 60 * 1000)
-      return { label: "SIGNAL", color: "#006686", animClass: "" };
-    return { label: "LATENT", color: "#ba1a1a", animClass: "" };
+  // eslint-disable-next-line react-hooks/purity
+  function getUserStatus(u: UserProfile) {
+    const nowMs = Date.now(); // impure but intentional for live status
+    const diff = nowMs - (u.lastSeen?.toMillis() ?? 0);
+    if (diff < 5 * 60 * 1000) return { label: "LIVE NOW", color: "#4caf50", pulse: true };
+    if (diff < 2 * 60 * 60 * 1000) return { label: "RECENT", color: "#006686", pulse: false };
+    return { label: "OFFLINE", color: "#ba1a1a", pulse: false };
   }
 
-  const pendingReceived = requests.filter(
-    (r) => r.toUid === uid && r.status === "pending"
-  );
+  const codename = (u: UserProfile) =>
+    u.codename ?? u.displayName.toUpperCase().replace(/\s+/g, "_");
 
-  const filtered = users.filter((u) => {
-    const name = (u.codename ?? u.displayName).toLowerCase();
-    const matchSearch =
-      !search ||
-      name.includes(search.toLowerCase()) ||
-      u.displayName.toLowerCase().includes(search.toLowerCase());
-    const matchInterest =
-      !filterInterest || (u.interests ?? []).includes(filterInterest);
-    return matchSearch && matchInterest;
-  });
-
-  const visible = filtered.slice(0, visibleCount);
-
-  async function handleSaveProfile() {
-    setSavingProfile(true);
-    try {
-      const payload: Parameters<typeof updateUserProfile>[1] = {};
-      if (editForm.codename.trim()) payload.codename = editForm.codename.trim().toUpperCase().replace(/\s+/g, "_");
-      if (editForm.bio.trim()) payload.bio = editForm.bio.trim();
-      if (editForm.interests.length > 0) payload.interests = editForm.interests;
-      if (Object.keys(payload).length > 0) await updateUserProfile(uid, payload);
-      setShowEditProfile(false);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setSavingProfile(false);
-    }
-  }
-
-  function toggleEditInterest(interest: string) {
-    setEditForm((f) => ({
-      ...f,
-      interests: f.interests.includes(interest)
-        ? f.interests.filter((i) => i !== interest)
-        : [...f.interests, interest],
-    }));
-  }
-
-  const codename = (user: UserProfile) =>
-    user.codename ?? user.displayName.toUpperCase().replace(/\s+/g, "_");
+  const matchesLeft = todayQueue.filter((u) => {
+    const { status } = getRequestState(u.email);
+    return status === "none";
+  }).length;
 
   return (
     <div
       style={{
         height: "100%",
         overflowY: "auto",
-        padding: "32px 40px 80px",
         fontFamily: "var(--font-quicksand),'Quicksand',sans-serif",
         backgroundImage:
-          "linear-gradient(to right, rgba(0,0,0,0.04) 1px, transparent 1px), linear-gradient(to bottom, rgba(0,0,0,0.04) 1px, transparent 1px)",
+          "linear-gradient(to right, rgba(0,0,0,0.03) 1px, transparent 1px), linear-gradient(to bottom, rgba(0,0,0,0.03) 1px, transparent 1px)",
         backgroundSize: "40px 40px",
         backgroundColor: "#fbf8fc",
       }}
     >
-      {/* ── HEADER ── */}
-      <section
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "flex-end",
-          gap: 24,
-          marginBottom: 32,
-          flexWrap: "wrap",
-        }}
-      >
-        <div style={{ maxWidth: 560 }}>
+      {/* Sticky header */}
+      <div style={{ position: "sticky", top: 0, zIndex: 10, backgroundColor: "#fbf8fc", borderBottom: "3px solid #1b1b1e" }}>
+        <div style={{ padding: "16px 16px 0" }}>
           <span
             style={{
-              display: "inline-block",
-              background: "#ffe24c",
-              border: "2px solid #1b1b1e",
-              padding: "4px 12px",
-              fontWeight: 700,
-              fontSize: 11,
-              textTransform: "uppercase",
-              letterSpacing: "0.06em",
-              marginBottom: 8,
-              transform: "rotate(-1deg)",
+              display: "inline-block", background: "#ff85c1",
+              border: "2px solid #1b1b1e", padding: "3px 10px",
+              fontWeight: 700, fontSize: 10, textTransform: "uppercase",
+              letterSpacing: "0.06em", marginBottom: 4, transform: "rotate(-1deg)",
             }}
           >
-            ACTIVE DATABASE
+            DAILY SIGNAL
           </span>
-          <h1
-            style={{
-              fontFamily:
-                "var(--font-bricolage),'Bricolage Grotesque',sans-serif",
-              fontSize: 32,
-              fontWeight: 700,
-              textTransform: "uppercase",
-              color: "#1b1b1e",
-              lineHeight: 1.1,
-              marginBottom: 8,
-            }}
-          >
-            RECRUIT DIRECTORY
-          </h1>
-          <p style={{ fontSize: 16, color: "#544249", fontWeight: 600 }}>
-            Find your frequency. Filter through the noise to find the perfect
-            squad-mate for the next signal burst.
-          </p>
-        </div>
-        <div style={{ display: "flex", gap: 12, alignItems: "flex-end" }}>
-          <div
-            style={{
-              background: "#ff85c1",
-              border: "4px solid #1b1b1e",
-              boxShadow: "8px 8px 0 #1b1b1e",
-              padding: "12px 20px",
-              transform: "rotate(1deg)",
-              flexShrink: 0,
-            }}
-          >
-            <span
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingBottom: 12 }}>
+            <h1
               style={{
-                fontFamily:
-                  "var(--font-bricolage),'Bricolage Grotesque',sans-serif",
-                fontSize: 22,
-                fontWeight: 700,
-                color: "#1b1b1e",
+                fontFamily: "var(--font-bricolage),'Bricolage Grotesque',sans-serif",
+                fontSize: 26, fontWeight: 700, textTransform: "uppercase",
+                color: "#1b1b1e", lineHeight: 1,
               }}
             >
-              {users.length} SYNCED
-            </span>
+              RECRUITS
+            </h1>
+            <div style={{ display: "flex", alignItems: "center", gap: 4, background: "#1b1b1e", padding: "4px 10px" }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 12, color: "#ffe24c" }}>schedule</span>
+              <span style={{ fontSize: 10, fontWeight: 700, color: "#fbf8fc", textTransform: "uppercase" }}>{timeLeft}</span>
+            </div>
           </div>
-          <button
-            onClick={() => setShowEditProfile(true)}
-            style={{
-              background: "#ffe24c",
-              border: "3px solid #1b1b1e",
-              boxShadow: "4px 4px 0 #1b1b1e",
-              padding: "10px 16px",
-              fontWeight: 700,
-              fontSize: 12,
-              textTransform: "uppercase",
-              letterSpacing: "0.04em",
-              cursor: "pointer",
-              fontFamily: "inherit",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-            }}
-          >
-            <span className="material-symbols-outlined" style={{ fontSize: 18 }}>edit</span>
-            MY PROFILE
-          </button>
-        </div>
-      </section>
-
-      {/* ── INCOMING REQUESTS ── */}
-      {pendingReceived.length > 0 && (
-        <section
-          style={{
-            background: "#ffd8e7",
-            border: "4px solid #1b1b1e",
-            boxShadow: "6px 6px 0 #1b1b1e",
-            padding: "20px 24px",
-            marginBottom: 32,
-          }}
-        >
-          <h2
-            style={{
-              fontFamily:
-                "var(--font-bricolage),'Bricolage Grotesque',sans-serif",
-              fontSize: 18,
-              fontWeight: 700,
-              textTransform: "uppercase",
-              color: "#9f376f",
-              marginBottom: 16,
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-            }}
-          >
-            <span
-              className="material-symbols-outlined"
-              style={{ fontSize: 20, fontVariationSettings: "'FILL' 1" }}
-            >
-              notifications_active
-            </span>
-            INCOMING SIGNALS ({pendingReceived.length})
-          </h2>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {pendingReceived.map((req) => {
-              const sender = users.find((u) => u.email === req.fromUid) ??
-                ({ email: req.fromUid, displayName: req.fromUid } as UserProfile);
-              return (
-                <div
-                  key={req.id}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 16,
-                    background: "#fbf8fc",
-                    border: "2px solid #1b1b1e",
-                    padding: "10px 14px",
-                    boxShadow: "3px 3px 0 #1b1b1e",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    {sender.photoURL && (
-                      <img
-                        src={sender.photoURL}
-                        alt={codename(sender)}
-                        style={{
-                          width: 36,
-                          height: 36,
-                          borderRadius: "50%",
-                          border: "2px solid #1b1b1e",
-                          objectFit: "cover",
-                        }}
-                      />
-                    )}
-                    <span
-                      style={{
-                        fontWeight: 700,
-                        fontSize: 13,
-                        textTransform: "uppercase",
-                      }}
-                    >
-                      {codename(sender)}
-                    </span>
-                    <span
-                      style={{
-                        fontSize: 11,
-                        color: "#544249",
-                        fontWeight: 600,
-                      }}
-                    >
-                      wants to connect
-                    </span>
-                  </div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button
-                      onClick={() => handleAccept(req.id)}
-                      disabled={accepting === req.id}
-                      style={{
-                        background: "#9f376f",
-                        color: "white",
-                        border: "2px solid #1b1b1e",
-                        padding: "6px 14px",
-                        fontWeight: 700,
-                        fontSize: 11,
-                        textTransform: "uppercase",
-                        cursor: "pointer",
-                        boxShadow: "3px 3px 0 #1b1b1e",
-                        fontFamily: "inherit",
-                      }}
-                    >
-                      {accepting === req.id ? "..." : "ACCEPT"}
-                    </button>
-                    <button
-                      onClick={() => handleReject(req.id)}
-                      style={{
-                        background: "#fbf8fc",
-                        border: "2px solid #1b1b1e",
-                        padding: "6px 14px",
-                        fontWeight: 700,
-                        fontSize: 11,
-                        textTransform: "uppercase",
-                        cursor: "pointer",
-                        fontFamily: "inherit",
-                      }}
-                    >
-                      IGNORE
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-      )}
-
-      {/* ── SEARCH + FILTERS ── */}
-      <section style={{ marginBottom: 32 }}>
-        <div style={{ position: "relative", marginBottom: 16 }}>
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="SEARCH CODENAME / FREQUENCY..."
-            style={{
-              width: "100%",
-              background: "#fbf8fc",
-              border: "4px solid #1b1b1e",
-              padding: "16px 56px 16px 20px",
-              fontFamily:
-                "var(--font-bricolage),'Bricolage Grotesque',sans-serif",
-              fontSize: 18,
-              fontWeight: 700,
-              textTransform: "uppercase",
-              outline: "none",
-              boxShadow: "6px 6px 0 #1b1b1e",
-              boxSizing: "border-box",
-              transition: "box-shadow 0.15s",
-            }}
-            onFocus={(e) =>
-              (e.currentTarget.style.boxShadow = "8px 8px 0 #ffe24c")
-            }
-            onBlur={(e) =>
-              (e.currentTarget.style.boxShadow = "6px 6px 0 #1b1b1e")
-            }
-          />
-          <span
-            className="material-symbols-outlined"
-            style={{
-              position: "absolute",
-              right: 20,
-              top: "50%",
-              transform: "translateY(-50%)",
-              fontSize: 30,
-              color: "#9f376f",
-              pointerEvents: "none",
-            }}
-          >
-            search
-          </span>
         </div>
 
-        <div
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: 10,
-            alignItems: "center",
-          }}
-        >
-          <span
-            style={{
-              fontSize: 11,
-              fontWeight: 700,
-              textTransform: "uppercase",
-              color: "#544249",
-              letterSpacing: "0.04em",
-              marginRight: 4,
-            }}
-          >
-            Frequency:
-          </span>
-          {INTERESTS.slice(0, 6).map((interest) => {
-            const active = filterInterest === interest;
-            return (
-              <button
-                key={interest}
-                onClick={() =>
-                  setFilterInterest(active ? null : interest)
-                }
-                style={{
-                  background: active
-                    ? (INTEREST_COLORS[interest] ?? "#ffe24c")
-                    : "#fbf8fc",
-                  border: "2px solid #1b1b1e",
-                  padding: "4px 14px",
-                  fontWeight: 700,
-                  fontSize: 11,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.03em",
-                  cursor: "pointer",
-                  boxShadow: active ? "3px 3px 0 #1b1b1e" : "2px 2px 0 #1b1b1e",
-                  fontFamily: "inherit",
-                  transition: "all 0.1s",
-                }}
-              >
-                {interest}
-              </button>
-            );
-          })}
-          {filterInterest && (
+        {/* View tabs */}
+        <div style={{ display: "flex", borderTop: "2px solid #1b1b1e" }}>
+          {([
+            { key: "match" as View, label: "TODAY'S MATCH", icon: "favorite" },
+            { key: "connections" as View, label: `CONNECTIONS${connections.length > 0 ? ` (${connections.length})` : ""}`, icon: "group" },
+          ]).map(({ key, label, icon }) => (
             <button
-              onClick={() => setFilterInterest(null)}
+              key={key}
+              onClick={() => setView(key)}
               style={{
-                background: "none",
-                border: "none",
-                fontSize: 11,
-                fontWeight: 700,
-                color: "#9f376f",
-                cursor: "pointer",
-                textTransform: "uppercase",
-                fontFamily: "inherit",
-                textDecoration: "underline",
+                flex: 1, padding: "10px", border: "none", borderRight: "2px solid #1b1b1e",
+                fontWeight: 800, fontSize: 10, textTransform: "uppercase", cursor: "pointer",
+                fontFamily: "inherit", letterSpacing: "0.04em",
+                backgroundColor: view === key ? "#1b1b1e" : "#fbf8fc",
+                color: view === key ? "#fbf8fc" : "#1b1b1e",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
               }}
             >
-              CLEAR
+              <span className="material-symbols-outlined" style={{ fontSize: 14, fontVariationSettings: view === key ? "'FILL' 1" : "'FILL' 0" }}>{icon}</span>
+              {label}
+              {key === "match" && pendingReceived.length > 0 && (
+                <span style={{ background: "#ba1a1a", color: "white", borderRadius: 999, padding: "0px 5px", fontSize: 9, fontWeight: 900 }}>
+                  {pendingReceived.length}
+                </span>
+              )}
             </button>
-          )}
+          ))}
         </div>
-      </section>
+      </div>
 
-      {/* ── RECRUIT GRID ── */}
-      {visible.length === 0 ? (
-        <div
-          style={{
-            textAlign: "center",
-            padding: "80px 0",
-            color: "#544249",
-            fontWeight: 600,
-            fontSize: 16,
-          }}
-        >
-          <span
-            className="material-symbols-outlined"
-            style={{ fontSize: 48, color: "#d9c0c9", display: "block", marginBottom: 12 }}
-          >
-            wifi_off
-          </span>
-          No recruits found on this frequency. Adjust your filters.
-        </div>
-      ) : (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-            gap: 24,
-          }}
-        >
-          {visible.map((user, idx) => {
-            const status = getUserStatus(user);
-            const { status: reqStatus, requestId } = getRequestState(user.email);
-            const cardBg = CARD_COLORS[idx % CARD_COLORS.length];
-            const primaryInterest = user.interests?.[0] ?? "UNTUNED";
-            const interestColor = INTEREST_COLORS[primaryInterest] ?? "#e4e1e6";
-
-            return (
-              <div
-                key={user.email}
+      <div style={{ padding: "16px 16px 80px" }}>
+        {/* ── MATCH VIEW ─────────────────────────────────────────────────── */}
+        {view === "match" && (
+          <>
+            {/* Incoming signals */}
+            {pendingReceived.length > 0 && (
+              <section
                 style={{
-                  background: cardBg,
-                  border: "4px solid #1b1b1e",
-                  padding: "24px",
-                  boxShadow: "6px 6px 0 #1b1b1e",
-                  position: "relative",
-                  overflow: "hidden",
-                  transition: "transform 0.12s, box-shadow 0.12s",
-                }}
-                onMouseEnter={(e) => {
-                  (e.currentTarget as HTMLDivElement).style.transform =
-                    "translate(2px, 2px)";
-                  (e.currentTarget as HTMLDivElement).style.boxShadow =
-                    "4px 4px 0 #1b1b1e";
-                }}
-                onMouseLeave={(e) => {
-                  (e.currentTarget as HTMLDivElement).style.transform = "";
-                  (e.currentTarget as HTMLDivElement).style.boxShadow =
-                    "6px 6px 0 #1b1b1e";
+                  background: "#ffd8e7", border: "3px solid #1b1b1e",
+                  boxShadow: "5px 5px 0 #1b1b1e", padding: "16px 18px", marginBottom: 20,
                 }}
               >
-                {/* Connected badge */}
-                {reqStatus === "friends" && (
-                  <div
-                    style={{
-                      position: "absolute",
-                      top: -2,
-                      right: -2,
-                      background: "#9f376f",
-                      color: "white",
-                      padding: "4px 10px",
-                      fontSize: 9,
-                      fontWeight: 800,
-                      textTransform: "uppercase",
-                      letterSpacing: "0.06em",
-                      border: "2px solid #1b1b1e",
-                    }}
-                  >
-                    CONNECTED
-                  </div>
-                )}
-
-                {/* Profile row */}
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: 14,
-                    marginBottom: 20,
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 72,
-                      height: 72,
-                      border: "4px solid #1b1b1e",
-                      boxShadow: "4px 4px 0 #1b1b1e",
-                      flexShrink: 0,
-                      overflow: "hidden",
-                      background: interestColor,
-                    }}
-                  >
-                    {user.photoURL ? (
-                      <img
-                        src={user.photoURL}
-                        alt={codename(user)}
-                        style={{
-                          width: "100%",
-                          height: "100%",
-                          objectFit: "cover",
-                        }}
-                      />
-                    ) : (
-                      <div
-                        style={{
-                          width: "100%",
-                          height: "100%",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                        }}
-                      >
-                        <span
-                          className="material-symbols-outlined"
-                          style={{ fontSize: 36, color: "#1b1b1e" }}
-                        >
-                          person
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                  <div style={{ minWidth: 0 }}>
-                    <h3
-                      style={{
-                        fontFamily:
-                          "var(--font-bricolage),'Bricolage Grotesque',sans-serif",
-                        fontSize: 18,
-                        fontWeight: 700,
-                        color: "#1b1b1e",
-                        textTransform: "uppercase",
-                        lineHeight: 1.2,
-                        wordBreak: "break-word",
-                        marginBottom: 4,
-                      }}
-                    >
-                      {codename(user)}
-                    </h3>
-                    {user.interests && user.interests.length > 1 && (
-                      <div
-                        style={{
-                          display: "flex",
-                          flexWrap: "wrap",
-                          gap: 4,
-                          marginTop: 6,
-                        }}
-                      >
-                        {user.interests.slice(0, 3).map((interest) => (
-                          <span
-                            key={interest}
-                            style={{
-                              background:
-                                INTEREST_COLORS[interest] ?? "#e4e1e6",
-                              border: "1.5px solid #1b1b1e",
-                              padding: "2px 8px",
-                              fontSize: 9,
-                              fontWeight: 700,
-                              textTransform: "uppercase",
-                              letterSpacing: "0.04em",
-                              color: "#1b1b1e",
-                            }}
-                          >
-                            {interest}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Stats */}
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 10,
-                    marginBottom: 20,
-                  }}
-                >
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      borderBottom: "2px solid #1b1b1e",
-                      paddingBottom: 8,
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: 11,
-                        fontWeight: 700,
-                        textTransform: "uppercase",
-                        opacity: 0.6,
-                        letterSpacing: "0.04em",
-                      }}
-                    >
-                      Frequency
-                    </span>
-                    <span
-                      style={{
-                        fontSize: 12,
-                        fontWeight: 700,
-                        textTransform: "uppercase",
-                        background: interestColor,
-                        border: "1.5px solid #1b1b1e",
-                        padding: "2px 10px",
-                      }}
-                    >
-                      {primaryInterest}
-                    </span>
-                  </div>
-                  {user.bio && (
-                    <div
-                      style={{
-                        borderBottom: "2px solid #1b1b1e",
-                        paddingBottom: 8,
-                      }}
-                    >
-                      <p
-                        style={{
-                          fontSize: 12,
-                          color: "#544249",
-                          fontWeight: 600,
-                          lineHeight: 1.5,
-                          overflow: "hidden",
-                          display: "-webkit-box",
-                          WebkitLineClamp: 2,
-                          WebkitBoxOrient: "vertical",
-                        }}
-                      >
-                        {user.bio}
-                      </p>
-                    </div>
-                  )}
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: 11,
-                        fontWeight: 700,
-                        textTransform: "uppercase",
-                        opacity: 0.6,
-                        letterSpacing: "0.04em",
-                      }}
-                    >
-                      Status
-                    </span>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <div
-                        className={status.animClass}
-                        style={{
-                          width: 10,
-                          height: 10,
-                          borderRadius: "50%",
-                          background: status.color,
-                          border: "2px solid #1b1b1e",
-                        }}
-                      />
-                      <span
-                        style={{
-                          fontSize: 12,
-                          fontWeight: 700,
-                          textTransform: "uppercase",
-                        }}
-                      >
-                        {status.label}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Actions */}
-                <div style={{ display: "flex", gap: 10 }}>
-                  <button
-                    onClick={() => setDossierUser(user)}
-                    style={{
-                      flex: 1,
-                      background: "#1b1b1e",
-                      color: "white",
-                      border: "2px solid #1b1b1e",
-                      padding: "10px 0",
-                      fontWeight: 700,
-                      fontSize: 11,
-                      textTransform: "uppercase",
-                      letterSpacing: "0.04em",
-                      cursor: "pointer",
-                      boxShadow: "3px 3px 0 #544249",
-                      fontFamily: "inherit",
-                      transition: "transform 0.1s, box-shadow 0.1s",
-                    }}
-                    onMouseEnter={(e) => {
-                      (e.currentTarget as HTMLButtonElement).style.transform = "translate(2px,2px)";
-                      (e.currentTarget as HTMLButtonElement).style.boxShadow = "1px 1px 0 #544249";
-                    }}
-                    onMouseLeave={(e) => {
-                      (e.currentTarget as HTMLButtonElement).style.transform = "";
-                      (e.currentTarget as HTMLButtonElement).style.boxShadow = "3px 3px 0 #544249";
-                    }}
-                  >
-                    VIEW DOSSIER
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (reqStatus === "none") handleSend(user.email);
-                      if (reqStatus === "received" && requestId) handleAccept(requestId);
-                    }}
-                    disabled={
-                      reqStatus === "sent" ||
-                      reqStatus === "friends" ||
-                      sending === user.email ||
-                      accepting === requestId
-                    }
-                    style={{
-                      width: 44,
-                      height: 44,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      background:
-                        reqStatus === "friends"
-                          ? "#ffe24c"
-                          : reqStatus === "sent"
-                          ? "#e4e1e6"
-                          : reqStatus === "received"
-                          ? "#9f376f"
-                          : "#ff85c1",
-                      border: "2px solid #1b1b1e",
-                      boxShadow: "3px 3px 0 #1b1b1e",
-                      cursor:
-                        reqStatus === "sent" || reqStatus === "friends"
-                          ? "default"
-                          : "pointer",
-                      fontFamily: "inherit",
-                      transition: "transform 0.1s, box-shadow 0.1s",
-                      opacity:
-                        reqStatus === "sent" || reqStatus === "friends" ? 0.7 : 1,
-                    }}
-                    title={
-                      reqStatus === "none"
-                        ? "Send friend request"
-                        : reqStatus === "sent"
-                        ? "Request sent"
-                        : reqStatus === "received"
-                        ? "Accept request"
-                        : "Already connected"
-                    }
-                  >
-                    <span
-                      className="material-symbols-outlined"
-                      style={{
-                        fontSize: 20,
-                        color:
-                          reqStatus === "received" ? "white" : "#1b1b1e",
-                        fontVariationSettings:
-                          reqStatus === "friends" ? "'FILL' 1" : "'FILL' 0",
-                      }}
-                    >
-                      {reqStatus === "friends"
-                        ? "check_circle"
-                        : reqStatus === "sent"
-                        ? "schedule"
-                        : reqStatus === "received"
-                        ? "person_add"
-                        : "person_add"}
-                    </span>
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* ── LOAD MORE ── */}
-      {visibleCount < filtered.length && (
-        <div style={{ display: "flex", justifyContent: "center", marginTop: 40 }}>
-          <button
-            onClick={() => setVisibleCount((n) => n + 6)}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 12,
-              background: "#ffe24c",
-              border: "4px solid #1b1b1e",
-              boxShadow: "8px 8px 0 #1b1b1e",
-              padding: "16px 40px",
-              fontFamily: "var(--font-bricolage),'Bricolage Grotesque',sans-serif",
-              fontSize: 18,
-              fontWeight: 700,
-              textTransform: "uppercase",
-              cursor: "pointer",
-              transition: "transform 0.1s, box-shadow 0.1s",
-            }}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.transform = "translate(-2px,-2px)";
-              (e.currentTarget as HTMLButtonElement).style.boxShadow = "10px 10px 0 #1b1b1e";
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.transform = "";
-              (e.currentTarget as HTMLButtonElement).style.boxShadow = "8px 8px 0 #1b1b1e";
-            }}
-            onMouseDown={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.transform = "translate(2px,2px)";
-              (e.currentTarget as HTMLButtonElement).style.boxShadow = "4px 4px 0 #1b1b1e";
-            }}
-            onMouseUp={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.transform = "translate(-2px,-2px)";
-              (e.currentTarget as HTMLButtonElement).style.boxShadow = "10px 10px 0 #1b1b1e";
-            }}
-          >
-            UNCOVER MORE SIGNALS
-            <span className="material-symbols-outlined" style={{ fontSize: 22 }}>
-              refresh
-            </span>
-          </button>
-        </div>
-      )}
-
-      {/* ── DOSSIER MODAL ── */}
-      {dossierUser && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.6)",
-            zIndex: 200,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 24,
-          }}
-          onClick={() => setDossierUser(null)}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              background: "#fbf8fc",
-              border: "4px solid #1b1b1e",
-              boxShadow: "8px 8px 0 #1b1b1e",
-              padding: 36,
-              maxWidth: 440,
-              width: "100%",
-              maxHeight: "90vh",
-              overflowY: "auto",
-            }}
-          >
-            <div style={{ display: "flex", gap: 20, marginBottom: 24 }}>
-              <div
-                style={{
-                  width: 96,
-                  height: 96,
-                  border: "4px solid #1b1b1e",
-                  boxShadow: "6px 6px 0 #1b1b1e",
-                  overflow: "hidden",
-                  flexShrink: 0,
-                  background: "#ff85c1",
-                }}
-              >
-                {dossierUser.photoURL ? (
-                  <img
-                    src={dossierUser.photoURL}
-                    alt={codename(dossierUser)}
-                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                  />
-                ) : (
-                  <div
-                    style={{
-                      width: "100%",
-                      height: "100%",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                    }}
-                  >
-                    <span
-                      className="material-symbols-outlined"
-                      style={{ fontSize: 48, color: "#1b1b1e" }}
-                    >
-                      person
-                    </span>
-                  </div>
-                )}
-              </div>
-              <div>
-                <h2
-                  style={{
-                    fontFamily:
-                      "var(--font-bricolage),'Bricolage Grotesque',sans-serif",
-                    fontSize: 26,
-                    fontWeight: 800,
-                    textTransform: "uppercase",
-                    color: "#9f376f",
-                    lineHeight: 1.1,
-                    marginBottom: 6,
-                  }}
-                >
-                  {codename(dossierUser)}
+                <h2 style={{ fontFamily: "var(--font-bricolage),'Bricolage Grotesque',sans-serif", fontSize: 16, fontWeight: 700, textTransform: "uppercase", color: "#9f376f", marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+                  <span className="material-symbols-outlined" style={{ fontSize: 18, fontVariationSettings: "'FILL' 1" }}>notifications_active</span>
+                  INCOMING SIGNALS ({pendingReceived.length})
                 </h2>
-                <p
-                  style={{
-                    fontSize: 12,
-                    color: "#544249",
-                    fontWeight: 600,
-                    textTransform: "uppercase",
-                    letterSpacing: "0.04em",
-                  }}
-                >
-                  {dossierUser.displayName}
-                </p>
-              </div>
-            </div>
-
-            {dossierUser.bio && (
-              <div
-                style={{
-                  background: "#ffd8e7",
-                  border: "2px solid #1b1b1e",
-                  padding: "12px 16px",
-                  marginBottom: 20,
-                }}
-              >
-                <p style={{ fontSize: 14, fontWeight: 600, color: "#3d0025", lineHeight: 1.6 }}>
-                  {dossierUser.bio}
-                </p>
-              </div>
-            )}
-
-            {dossierUser.interests && dossierUser.interests.length > 0 && (
-              <div style={{ marginBottom: 20 }}>
-                <p
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 700,
-                    textTransform: "uppercase",
-                    color: "#544249",
-                    letterSpacing: "0.04em",
-                    marginBottom: 10,
-                  }}
-                >
-                  Frequencies
-                </p>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {dossierUser.interests.map((interest) => (
-                    <span
-                      key={interest}
-                      style={{
-                        background: INTEREST_COLORS[interest] ?? "#e4e1e6",
-                        border: "2px solid #1b1b1e",
-                        padding: "4px 14px",
-                        fontSize: 11,
-                        fontWeight: 700,
-                        textTransform: "uppercase",
-                        boxShadow: "2px 2px 0 #1b1b1e",
-                      }}
-                    >
-                      {interest}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div style={{ display: "flex", gap: 12, marginTop: 24 }}>
-              <button
-                onClick={() => setDossierUser(null)}
-                style={{
-                  flex: 1,
-                  background: "#fbf8fc",
-                  border: "3px solid #1b1b1e",
-                  padding: "12px",
-                  fontWeight: 700,
-                  fontSize: 13,
-                  textTransform: "uppercase",
-                  cursor: "pointer",
-                  boxShadow: "4px 4px 0 #1b1b1e",
-                  fontFamily: "inherit",
-                }}
-              >
-                CLOSE
-              </button>
-              {(() => {
-                const { status: reqStatus, requestId } = getRequestState(dossierUser.email);
-                if (reqStatus === "friends") return (
-                  <div
-                    style={{
-                      flex: 2,
-                      background: "#ffe24c",
-                      border: "3px solid #1b1b1e",
-                      padding: "12px",
-                      fontWeight: 700,
-                      fontSize: 13,
-                      textTransform: "uppercase",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: 8,
-                    }}
-                  >
-                    <span className="material-symbols-outlined" style={{ fontSize: 16, fontVariationSettings: "'FILL' 1" }}>check_circle</span>
-                    CONNECTED
-                  </div>
-                );
-                if (reqStatus === "sent") return (
-                  <div
-                    style={{
-                      flex: 2,
-                      background: "#e4e1e6",
-                      border: "3px solid #1b1b1e",
-                      padding: "12px",
-                      fontWeight: 700,
-                      fontSize: 13,
-                      textTransform: "uppercase",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: 8,
-                      color: "#544249",
-                    }}
-                  >
-                    <span className="material-symbols-outlined" style={{ fontSize: 16 }}>schedule</span>
-                    REQUEST SENT
-                  </div>
-                );
-                if (reqStatus === "received" && requestId) return (
-                  <button
-                    onClick={() => { handleAccept(requestId); setDossierUser(null); }}
-                    style={{
-                      flex: 2,
-                      background: "#9f376f",
-                      color: "white",
-                      border: "3px solid #1b1b1e",
-                      padding: "12px",
-                      fontWeight: 700,
-                      fontSize: 13,
-                      textTransform: "uppercase",
-                      cursor: "pointer",
-                      boxShadow: "4px 4px 0 #1b1b1e",
-                      fontFamily: "inherit",
-                    }}
-                  >
-                    ACCEPT REQUEST
-                  </button>
-                );
-                return (
-                  <button
-                    onClick={() => { handleSend(dossierUser.email); setDossierUser(null); }}
-                    disabled={sending === dossierUser.email}
-                    style={{
-                      flex: 2,
-                      background: "#9f376f",
-                      color: "white",
-                      border: "3px solid #1b1b1e",
-                      padding: "12px",
-                      fontWeight: 700,
-                      fontSize: 13,
-                      textTransform: "uppercase",
-                      cursor: "pointer",
-                      boxShadow: "4px 4px 0 #1b1b1e",
-                      fontFamily: "inherit",
-                    }}
-                  >
-                    SEND SIGNAL
-                  </button>
-                );
-              })()}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── EDIT PROFILE MODAL ── */}
-      {showEditProfile && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.6)",
-            zIndex: 200,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 24,
-          }}
-          onClick={() => setShowEditProfile(false)}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              background: "#fbf8fc",
-              border: "4px solid #1b1b1e",
-              boxShadow: "8px 8px 0 #1b1b1e",
-              padding: 40,
-              maxWidth: 500,
-              width: "100%",
-              maxHeight: "90vh",
-              overflowY: "auto",
-            }}
-          >
-            <h2
-              style={{
-                fontFamily:
-                  "var(--font-bricolage),'Bricolage Grotesque',sans-serif",
-                fontSize: 28,
-                fontWeight: 800,
-                textTransform: "uppercase",
-                color: "#9f376f",
-                marginBottom: 24,
-              }}
-            >
-              TUNE YOUR SIGNAL
-            </h2>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-              <div>
-                <label
-                  style={{
-                    display: "block",
-                    fontWeight: 700,
-                    fontSize: 11,
-                    textTransform: "uppercase",
-                    letterSpacing: "0.04em",
-                    color: "#544249",
-                    marginBottom: 6,
-                  }}
-                >
-                  Codename
-                </label>
-                <input
-                  value={editForm.codename}
-                  onChange={(e) =>
-                    setEditForm((f) => ({ ...f, codename: e.target.value }))
-                  }
-                  placeholder="e.g. VOID_WALKER_Z"
-                  style={{
-                    width: "100%",
-                    border: "3px solid #1b1b1e",
-                    padding: "12px 16px",
-                    fontSize: 15,
-                    fontWeight: 700,
-                    fontFamily: "inherit",
-                    outline: "none",
-                    background: "#f6f2f7",
-                    boxSizing: "border-box",
-                    textTransform: "uppercase",
-                  }}
-                />
-              </div>
-
-              <div>
-                <label
-                  style={{
-                    display: "block",
-                    fontWeight: 700,
-                    fontSize: 11,
-                    textTransform: "uppercase",
-                    letterSpacing: "0.04em",
-                    color: "#544249",
-                    marginBottom: 6,
-                  }}
-                >
-                  Bio / Signal Description
-                </label>
-                <textarea
-                  value={editForm.bio}
-                  onChange={(e) =>
-                    setEditForm((f) => ({ ...f, bio: e.target.value }))
-                  }
-                  placeholder="What's your frequency? What are you about?"
-                  rows={3}
-                  style={{
-                    width: "100%",
-                    border: "3px solid #1b1b1e",
-                    padding: "12px 16px",
-                    fontSize: 14,
-                    fontWeight: 600,
-                    fontFamily: "inherit",
-                    outline: "none",
-                    background: "#f6f2f7",
-                    boxSizing: "border-box",
-                    resize: "vertical",
-                    lineHeight: 1.5,
-                  }}
-                />
-              </div>
-
-              <div>
-                <label
-                  style={{
-                    display: "block",
-                    fontWeight: 700,
-                    fontSize: 11,
-                    textTransform: "uppercase",
-                    letterSpacing: "0.04em",
-                    color: "#544249",
-                    marginBottom: 10,
-                  }}
-                >
-                  Frequencies / Interests
-                </label>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {INTERESTS.map((interest) => {
-                    const selected = editForm.interests.includes(interest);
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {pendingReceived.map((req) => {
+                    const sender = users.find((u) => u.email === req.fromUid) ?? ({ email: req.fromUid, displayName: req.fromUid } as UserProfile);
                     return (
-                      <button
-                        key={interest}
-                        type="button"
-                        onClick={() => toggleEditInterest(interest)}
+                      <div
+                        key={req.id}
                         style={{
-                          background: selected
-                            ? (INTEREST_COLORS[interest] ?? "#ffe24c")
-                            : "#fbf8fc",
-                          border: "2px solid #1b1b1e",
-                          padding: "6px 14px",
-                          fontWeight: 700,
-                          fontSize: 11,
-                          textTransform: "uppercase",
-                          letterSpacing: "0.03em",
-                          cursor: "pointer",
-                          boxShadow: selected ? "3px 3px 0 #1b1b1e" : "2px 2px 0 #877179",
-                          fontFamily: "inherit",
+                          display: "flex", alignItems: "center", justifyContent: "space-between",
+                          gap: 12, background: "#fbf8fc", border: "2px solid #1b1b1e",
+                          padding: "10px 12px", boxShadow: "2px 2px 0 #1b1b1e",
+                          flexWrap: "wrap",
                         }}
                       >
-                        {selected && "✓ "}{interest}
-                      </button>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          {sender.photoURL && (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={sender.photoURL} alt={codename(sender)} style={{ width: 34, height: 34, borderRadius: "50%", border: "2px solid #1b1b1e", objectFit: "cover" }} />
+                          )}
+                          <div>
+                            <span style={{ fontWeight: 700, fontSize: 12, textTransform: "uppercase", display: "block" }}>{codename(sender)}</span>
+                            <span style={{ fontSize: 10, color: "#544249", fontWeight: 600 }}>wants to connect</span>
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <button
+                            onClick={() => handleAccept(req.id)}
+                            disabled={accepting === req.id}
+                            style={{ background: "#9f376f", color: "white", border: "2px solid #1b1b1e", padding: "6px 12px", fontWeight: 700, fontSize: 10, textTransform: "uppercase", cursor: "pointer", boxShadow: "2px 2px 0 #1b1b1e", fontFamily: "inherit" }}
+                          >
+                            {accepting === req.id ? "..." : "ACCEPT"}
+                          </button>
+                          <button
+                            onClick={() => handleReject(req.id)}
+                            style={{ background: "#fbf8fc", border: "2px solid #1b1b1e", padding: "6px 12px", fontWeight: 700, fontSize: 10, textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit" }}
+                          >
+                            IGNORE
+                          </button>
+                        </div>
+                      </div>
                     );
                   })}
                 </div>
-              </div>
-            </div>
+              </section>
+            )}
 
-            <div style={{ display: "flex", gap: 12, marginTop: 28 }}>
-              <button
-                onClick={() => setShowEditProfile(false)}
-                style={{
-                  flex: 1,
-                  background: "#fbf8fc",
-                  border: "3px solid #1b1b1e",
-                  padding: "14px",
-                  fontWeight: 700,
-                  fontSize: 13,
-                  textTransform: "uppercase",
-                  cursor: "pointer",
-                  boxShadow: "4px 4px 0 #1b1b1e",
-                  fontFamily: "inherit",
-                }}
-              >
-                CANCEL
-              </button>
-              <button
-                onClick={handleSaveProfile}
-                disabled={savingProfile}
-                style={{
-                  flex: 2,
-                  background: "#9f376f",
-                  color: "white",
-                  border: "3px solid #1b1b1e",
-                  padding: "14px",
-                  fontWeight: 700,
-                  fontSize: 13,
-                  textTransform: "uppercase",
-                  cursor: "pointer",
-                  boxShadow: "4px 4px 0 #1b1b1e",
-                  fontFamily: "inherit",
-                  opacity: savingProfile ? 0.6 : 1,
-                }}
-              >
-                {savingProfile ? "TRANSMITTING..." : "BROADCAST SIGNAL"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+            {/* Daily match card */}
+            {!todayMatch ? (
+              <div style={{ textAlign: "center", padding: "60px 0", color: "#544249", fontWeight: 600 }}>
+                <span className="material-symbols-outlined" style={{ fontSize: 56, color: "#d9c0c9", display: "block", marginBottom: 14 }}>wifi_off</span>
+                <p style={{ fontFamily: "var(--font-bricolage),'Bricolage Grotesque',sans-serif", fontSize: 20, fontWeight: 700, textTransform: "uppercase", marginBottom: 6 }}>
+                  {users.length === 0 ? "NO SIGNAL" : "ALL PASSED"}
+                </p>
+                <p style={{ fontSize: 13 }}>
+                  {users.length === 0 ? "No other users on the network yet." : "You've passed everyone today. New matches at midnight."}
+                </p>
+              </div>
+            ) : (() => {
+              const { status: reqStatus, requestId } = getRequestState(todayMatch.email);
+              const status = getUserStatus(todayMatch);
+              const primaryInterest = todayMatch.interests?.[0] ?? "UNTUNED";
+              const interestBg = INTEREST_COLORS[primaryInterest] ?? "#e4e1e6";
+
+              return (
+                <div style={{ maxWidth: 500, margin: "0 auto" }}>
+                  {/* Match counter pill */}
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: "#544249", textTransform: "uppercase" }}>
+                      {matchesLeft} potential matches today
+                    </span>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: "#9f376f", textTransform: "uppercase" }}>
+                      {connections.length} connected
+                    </span>
+                  </div>
+
+                  {/* Card */}
+                  <div
+                    style={{
+                      background: "#fbf8fc", border: "4px solid #1b1b1e",
+                      boxShadow: "10px 10px 0 #1b1b1e", overflow: "hidden",
+                    }}
+                  >
+                    {/* Colored header band */}
+                    <div style={{ background: interestBg, padding: "20px 24px 16px", borderBottom: "3px solid #1b1b1e", position: "relative" }}>
+                      <div style={{ display: "flex", gap: 16, alignItems: "flex-end" }}>
+                        <div
+                          style={{
+                            width: 90, height: 90, border: "4px solid #1b1b1e",
+                            boxShadow: "4px 4px 0 #1b1b1e", flexShrink: 0,
+                            overflow: "hidden", background: "#fbf8fc",
+                            borderRadius: 4,
+                          }}
+                        >
+                          {todayMatch.photoURL ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={todayMatch.photoURL} alt={codename(todayMatch)} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                          ) : (
+                            <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                              <span className="material-symbols-outlined" style={{ fontSize: 44, color: "#1b1b1e" }}>person</span>
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ flex: 1, paddingBottom: 4 }}>
+                          <h2 style={{ fontFamily: "var(--font-bricolage),'Bricolage Grotesque',sans-serif", fontSize: 22, fontWeight: 800, textTransform: "uppercase", color: "#1b1b1e", lineHeight: 1.1, marginBottom: 6 }}>
+                            {codename(todayMatch)}
+                          </h2>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+                            <div
+                              className={status.pulse ? "animate-pulse" : ""}
+                              style={{ width: 10, height: 10, borderRadius: "50%", background: status.color, border: "2px solid #1b1b1e", flexShrink: 0 }}
+                            />
+                            <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: status.color }}>{status.label}</span>
+                          </div>
+                          {todayMatch.interests && todayMatch.interests.length > 0 && (
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                              {todayMatch.interests.slice(0, 3).map((i) => (
+                                <span key={i} style={{ background: INTEREST_COLORS[i] ?? "#e4e1e6", border: "1.5px solid #1b1b1e", padding: "2px 8px", fontSize: 8, fontWeight: 700, textTransform: "uppercase" }}>
+                                  {i}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ padding: "18px 20px" }}>
+                      {/* Bio */}
+                      {todayMatch.bio ? (
+                        <div style={{ background: "#ffd8e7", border: "2px solid #1b1b1e", padding: "10px 14px", marginBottom: 16, borderRadius: 2 }}>
+                          <p style={{ fontSize: 13, fontWeight: 600, color: "#3d0025", lineHeight: 1.6 }}>&ldquo;{todayMatch.bio}&rdquo;</p>
+                        </div>
+                      ) : (
+                        <div style={{ background: "#f0eeef", border: "2px dashed #c4bcc3", padding: "10px 14px", marginBottom: 16, borderRadius: 2 }}>
+                          <p style={{ fontSize: 12, fontWeight: 600, color: "#7a6b73", lineHeight: 1.5, fontStyle: "italic" }}>No bio yet — reach out and find out!</p>
+                        </div>
+                      )}
+
+                      {/* Action buttons */}
+                      {reqStatus === "none" && (
+                        <div style={{ display: "flex", gap: 10 }}>
+                          {/* PASS */}
+                          <button
+                            onClick={handlePass}
+                            style={{
+                              flex: 1, background: "#fbf8fc", color: "#544249",
+                              border: "3px solid #1b1b1e", padding: "14px 0",
+                              fontWeight: 800, fontSize: 13, textTransform: "uppercase",
+                              cursor: "pointer", fontFamily: "inherit",
+                              boxShadow: "4px 4px 0 #1b1b1e",
+                              display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                            }}
+                          >
+                            <span className="material-symbols-outlined" style={{ fontSize: 20 }}>close</span>
+                            PASS
+                          </button>
+                          {/* CONNECT */}
+                          <button
+                            onClick={handleConnect}
+                            disabled={sending}
+                            style={{
+                              flex: 2, background: "#9f376f", color: "white",
+                              border: "3px solid #1b1b1e", padding: "14px 0",
+                              fontWeight: 800, fontSize: 13, textTransform: "uppercase",
+                              cursor: "pointer", boxShadow: "5px 5px 0 #3d0025",
+                              fontFamily: "inherit",
+                              display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                            }}
+                          >
+                            <span className="material-symbols-outlined" style={{ fontSize: 20, fontVariationSettings: "'FILL' 1" }}>favorite</span>
+                            {sending ? "CONNECTING..." : "CONNECT"}
+                          </button>
+                        </div>
+                      )}
+
+                      {reqStatus === "sent" && (
+                        <div style={{ display: "flex", gap: 10 }}>
+                          <div style={{ flex: 1, background: "#e4e1e6", border: "3px solid #1b1b1e", padding: "14px 0", fontWeight: 800, fontSize: 13, textTransform: "uppercase", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, color: "#544249" }}>
+                            <span className="material-symbols-outlined" style={{ fontSize: 18 }}>schedule</span>
+                            SIGNAL SENT
+                          </div>
+                          <button
+                            onClick={handlePass}
+                            style={{ flex: 1, background: "#fbf8fc", color: "#544249", border: "3px solid #1b1b1e", padding: "14px 0", fontWeight: 700, fontSize: 11, textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}
+                          >
+                            NEXT
+                          </button>
+                        </div>
+                      )}
+
+                      {reqStatus === "received" && requestId && (
+                        <button
+                          onClick={() => handleAccept(requestId)}
+                          disabled={accepting === requestId}
+                          style={{
+                            width: "100%", background: "#ffe24c", border: "3px solid #1b1b1e",
+                            padding: "14px 0", fontWeight: 800, fontSize: 14, textTransform: "uppercase",
+                            cursor: "pointer", boxShadow: "5px 5px 0 #1b1b1e", fontFamily: "inherit",
+                            display: "flex", alignItems: "center", justifyContent: "center", gap: 10, color: "#1b1b1e",
+                          }}
+                        >
+                          <span className="material-symbols-outlined" style={{ fontSize: 22, fontVariationSettings: "'FILL' 1" }}>person_add</span>
+                          {accepting === requestId ? "..." : "THEY LIKE YOU — ACCEPT!"}
+                        </button>
+                      )}
+
+                      {reqStatus === "friends" && (
+                        <div>
+                          <div style={{ width: "100%", background: "#c8f7c5", border: "3px solid #1b1b1e", padding: "14px 0", fontWeight: 800, fontSize: 14, textTransform: "uppercase", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, color: "#1b1b1e", marginBottom: 8 }}>
+                            <span className="material-symbols-outlined" style={{ fontSize: 22, fontVariationSettings: "'FILL' 1" }}>check_circle</span>
+                            YOU&apos;RE CONNECTED!
+                          </div>
+                          <button
+                            onClick={handlePass}
+                            style={{ width: "100%", background: "#fbf8fc", color: "#544249", border: "3px solid #1b1b1e", padding: "10px 0", fontWeight: 700, fontSize: 11, textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit" }}
+                          >
+                            SEE NEXT MATCH
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Deck preview — show avatars of next few */}
+                  {todayQueue.length > 1 && (
+                    <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, paddingLeft: 4 }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: "#544249", textTransform: "uppercase" }}>UP NEXT:</span>
+                      {todayQueue.slice(1, 5).map((u) => (
+                        <div key={u.email} style={{ width: 28, height: 28, borderRadius: "50%", border: "2px solid #1b1b1e", overflow: "hidden", background: "#ffd8e7", flexShrink: 0 }}>
+                          {u.photoURL
+                            ? <img src={u.photoURL} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                            : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800, color: "#9f376f" }}>{(u.displayName || "?")[0].toUpperCase()}</div>
+                          }
+                        </div>
+                      ))}
+                      {todayQueue.length > 5 && (
+                        <span style={{ fontSize: 11, fontWeight: 700, color: "#7aafbf" }}>+{todayQueue.length - 5} more</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </>
+        )}
+
+        {/* ── CONNECTIONS VIEW ──────────────────────────────────────────── */}
+        {view === "connections" && (
+          <>
+            {connections.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "60px 0", color: "#544249", fontWeight: 600 }}>
+                <span className="material-symbols-outlined" style={{ fontSize: 56, color: "#d9c0c9", display: "block", marginBottom: 14 }}>group</span>
+                <p style={{ fontFamily: "var(--font-bricolage),'Bricolage Grotesque',sans-serif", fontSize: 20, fontWeight: 700, textTransform: "uppercase", marginBottom: 6 }}>NO CONNECTIONS YET</p>
+                <p style={{ fontSize: 13 }}>Make your first connection on the Match tab.</p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <p style={{ fontSize: 12, color: "#544249", fontWeight: 600, marginBottom: 4 }}>
+                  You&apos;re connected with {connections.length} {connections.length === 1 ? "person" : "people"}.
+                </p>
+                {connections.map((conn) => {
+                  const st = getUserStatus(conn);
+                  return (
+                    <div
+                      key={conn.email}
+                      style={{
+                        background: "#fbf8fc", border: "3px solid #1b1b1e",
+                        boxShadow: "4px 4px 0 #1b1b1e", overflow: "hidden",
+                        display: "flex", alignItems: "center",
+                      }}
+                    >
+                      {/* Color accent */}
+                      <div style={{ width: 6, alignSelf: "stretch", background: INTEREST_COLORS[conn.interests?.[0] ?? ""] ?? "#ffd8e7", flexShrink: 0 }} />
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", flex: 1 }}>
+                        <div style={{ width: 48, height: 48, borderRadius: "50%", border: "3px solid #1b1b1e", flexShrink: 0, overflow: "hidden", background: "#ffd8e7" }}>
+                          {conn.photoURL
+                            ? <img src={conn.photoURL} alt={codename(conn)} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                            : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                <span className="material-symbols-outlined" style={{ fontSize: 24, color: "#9f376f" }}>person</span>
+                              </div>
+                          }
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <p style={{ fontFamily: "var(--font-bricolage),'Bricolage Grotesque',sans-serif", fontWeight: 700, fontSize: 14, textTransform: "uppercase", color: "#1b1b1e", marginBottom: 2 }}>
+                            {codename(conn)}
+                          </p>
+                          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                            <div className={st.pulse ? "animate-pulse" : ""} style={{ width: 8, height: 8, borderRadius: "50%", background: st.color, border: "1.5px solid #1b1b1e" }} />
+                            <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: "#544249" }}>{st.label}</span>
+                          </div>
+                          {conn.interests && conn.interests.length > 0 && (
+                            <div style={{ display: "flex", gap: 4, marginTop: 4, flexWrap: "wrap" }}>
+                              {conn.interests.slice(0, 2).map(i => (
+                                <span key={i} style={{ background: INTEREST_COLORS[i] ?? "#e4e1e6", border: "1px solid #1b1b1e", padding: "1px 6px", fontSize: 8, fontWeight: 700, textTransform: "uppercase" }}>{i}</span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                          <span className="material-symbols-outlined" style={{ fontSize: 20, color: "#4caf50", fontVariationSettings: "'FILL' 1" }}>check_circle</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

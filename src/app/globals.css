@@ -204,3 +204,23 @@ section, header, footer { overflow-x: hidden; }
   .discover-overlay-panel { bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
   .kyc-shell { bottom: calc(80px + env(safe-area-inset-bottom, 0px)) !important; }
 }
+
+/* ── Admin panel mobile ── */
+@media (max-width: 768px) {
+  .admin-main { padding: 16px !important; }
+}
+
+/* ── Intel / Recruit / Panels — always scrollable ── */
+.discover-overlay-panel { overflow-y: auto; }
+
+/* ── Prevent tap highlight on buttons ── */
+button { -webkit-tap-highlight-color: transparent; }
+
+/* ── Safe area padding for modals on notch devices ── */
+.modal-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
+
+/* ── Tablet: shrink sidebar ── */
+@media (min-width: 640px) and (max-width: 1023px) {
+  .discover-sidebar { width: 260px !important; }
+  .discover-main    { margin-left: 260px !important; }
+}

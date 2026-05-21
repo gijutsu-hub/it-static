@@ -4,10 +4,29 @@ import { redirect } from "next/navigation";
 import NotificationSender from "./NotificationSender";
 import UserManagement from "./UserManagement";
 import KYCReview from "./KYCReview";
+import SquadManagement from "./SquadManagement";
+import AnalyticsDashboard from "./AnalyticsDashboard";
 
 export const metadata: Metadata = { title: "Admin — IT'S STATIC" };
 
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "snath2973@gmail.com";
+
+function SectionHeader({ title }: { title: string }) {
+  return (
+    <div className="mb-6 flex items-center gap-4">
+      <h2
+        style={{
+          fontFamily: "var(--font-bricolage,'Bricolage Grotesque',sans-serif)",
+          fontSize: 22, fontWeight: 800, textTransform: "uppercase", color: "#1b1b1e",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {title}
+      </h2>
+      <div className="h-1 flex-1 border-t-4 border-on-surface" style={{ borderStyle: "dashed" }} />
+    </div>
+  );
+}
 
 export default async function AdminPage() {
   const session = await auth();
@@ -21,88 +40,68 @@ export default async function AdminPage() {
     >
       {/* Header */}
       <header
-        className="border-b-4 border-on-surface px-16 py-4 flex items-center gap-6"
-        style={{ boxShadow: "0 4px 0 #1b1b1e", backgroundColor: "#fbf8fc" }}
+        style={{
+          position: "sticky", top: 0, zIndex: 50,
+          borderBottom: "4px solid #1b1b1e", boxShadow: "0 4px 0 #1b1b1e",
+          backgroundColor: "#fbf8fc", padding: "14px 32px",
+          display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap",
+        }}
       >
         <h1
           style={{
             fontFamily: "var(--font-bricolage,'Bricolage Grotesque',sans-serif)",
-            fontSize: 28, fontWeight: 800, textTransform: "uppercase",
+            fontSize: 24, fontWeight: 800, textTransform: "uppercase",
             color: "#9f376f", fontStyle: "italic", letterSpacing: "-0.02em",
           }}
         >
-          RESIST_NET · ADMIN
+          IT&apos;S STATIC · ADMIN
         </h1>
         <span
-          className="font-label-sm text-xs uppercase border-2 border-on-surface px-3 py-1"
-          style={{ backgroundColor: "#ffe24c", boxShadow: "2px 2px 0 #1b1b1e" }}
+          style={{
+            backgroundColor: "#ffe24c", border: "2px solid #1b1b1e",
+            boxShadow: "2px 2px 0 #1b1b1e", padding: "3px 10px",
+            fontSize: 11, fontWeight: 700, textTransform: "uppercase",
+          }}
         >
           {ADMIN_EMAIL}
         </span>
         <a
           href="/discover"
-          className="ml-auto font-label-lg text-sm uppercase text-on-surface-variant hover:text-primary transition-colors"
+          style={{ marginLeft: "auto", fontSize: 13, fontWeight: 700, textTransform: "uppercase", color: "#544249", textDecoration: "none" }}
         >
           ← Back to map
         </a>
       </header>
 
-      <main className="p-8 md:p-16 flex flex-col gap-12 max-w-7xl mx-auto">
+      <main style={{ padding: "32px 24px", maxWidth: 1280, margin: "0 auto", display: "flex", flexDirection: "column", gap: 48 }}>
+
+        {/* ── Analytics Dashboard ──────────────────────────────────── */}
+        <section>
+          <SectionHeader title="Platform Analytics" />
+          <AnalyticsDashboard />
+        </section>
 
         {/* ── KYC Review ──────────────────────────────────────────── */}
         <section>
-          <div className="mb-6 flex items-center gap-4">
-            <h2
-              style={{
-                fontFamily: "var(--font-bricolage,'Bricolage Grotesque',sans-serif)",
-                fontSize: 24, fontWeight: 800, textTransform: "uppercase", color: "#1b1b1e",
-              }}
-            >
-              KYC Verification Review
-            </h2>
-            <div
-              className="h-1 flex-1 border-t-4 border-on-surface"
-              style={{ borderStyle: "dashed" }}
-            />
-          </div>
+          <SectionHeader title="KYC Verification Review" />
           <KYCReview />
+        </section>
+
+        {/* ── Squad Management ────────────────────────────────────── */}
+        <section>
+          <SectionHeader title="Squad Management" />
+          <SquadManagement />
         </section>
 
         {/* ── User Management ─────────────────────────────────────── */}
         <section>
-          <div className="mb-6 flex items-center gap-4">
-            <h2
-              style={{
-                fontFamily: "var(--font-bricolage,'Bricolage Grotesque',sans-serif)",
-                fontSize: 24, fontWeight: 800, textTransform: "uppercase", color: "#1b1b1e",
-              }}
-            >
-              User Management
-            </h2>
-            <div
-              className="h-1 flex-1 border-t-4 border-on-surface"
-              style={{ borderStyle: "dashed" }}
-            />
-          </div>
+          <SectionHeader title="User Management" />
           <UserManagement />
         </section>
 
         {/* ── Push Notifications ──────────────────────────────────── */}
         <section>
-          <div className="mb-6 flex items-center gap-4">
-            <h2
-              style={{
-                fontFamily: "var(--font-bricolage,'Bricolage Grotesque',sans-serif)",
-                fontSize: 24, fontWeight: 800, textTransform: "uppercase", color: "#1b1b1e",
-              }}
-            >
-              Push Notifications
-            </h2>
-            <div
-              className="h-1 flex-1 border-t-4 border-on-surface"
-              style={{ borderStyle: "dashed" }}
-            />
-          </div>
+          <SectionHeader title="Push Notifications" />
           <NotificationSender />
         </section>
 
