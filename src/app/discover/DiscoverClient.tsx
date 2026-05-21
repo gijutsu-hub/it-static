@@ -6,6 +6,7 @@ import { setOptions, importLibrary } from "@googlemaps/js-api-loader";
 import { doc, onSnapshot } from "firebase/firestore";
 import {
   subscribeToSquads,
+  subscribeToUsers,
   createSquad,
   joinSquad,
   upsertUser,
@@ -18,6 +19,7 @@ import {
 import { authReady } from "@/lib/firebase";
 import RecruitDirectory from "./RecruitDirectory";
 import KYCFlow from "./KYCFlow";
+import SquadChat from "./SquadChat";
 import { signOut } from "next-auth/react";
 
 const MAPS_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!;
@@ -72,12 +74,17 @@ export default function DiscoverClient({ session }: Props) {
   >(new Map());
   const userMarkerRef =
     useRef<google.maps.marker.AdvancedMarkerElement | null>(null);
+  const userLocMarkerMapRef = useRef<
+    Map<string, google.maps.marker.AdvancedMarkerElement>
+  >(new Map());
+  const allUsersRef = useRef<UserProfile[]>([]);
 
   const [userLocation, setUserLocation] = useState<{
     lat: number;
     lng: number;
   } | null>(null);
   const [allSquads, setAllSquads] = useState<Squad[]>([]);
+  const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [nearbySquads, setNearbySquads] = useState<Squad[]>([]);
   const [showHostModal, setShowHostModal] = useState(false);
   const [hostForm, setHostForm] = useState({
@@ -98,6 +105,8 @@ export default function DiscoverClient({ session }: Props) {
   const [joining, setJoining] = useState<string | null>(null);
   const [notifPanelOpen, setNotifPanelOpen] = useState(false);
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
+
+  const AdvancedMarkerElementRef = useRef<typeof google.maps.marker.AdvancedMarkerElement | null>(null);
 
   const notifRef = useRef<HTMLDivElement>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
@@ -205,8 +214,13 @@ export default function DiscoverClient({ session }: Props) {
 
   // ── Load Google Maps ───────────────────────────────────────────────────────
   useEffect(() => {
-    setOptions({ key: MAPS_API_KEY, v: "weekly", libraries: ["marker"] });
-    importLibrary("maps").then(() => setMapsReady(true));
+    setOptions({ key: MAPS_API_KEY, v: "weekly" });
+    Promise.all([
+      importLibrary("maps"),
+      importLibrary("marker").then((lib: any) => {
+        AdvancedMarkerElementRef.current = lib.AdvancedMarkerElement;
+      }),
+    ]).then(() => setMapsReady(true));
   }, []);
 
   // ── Initialize map once ready ──────────────────────────────────────────────
@@ -235,6 +249,9 @@ export default function DiscoverClient({ session }: Props) {
     });
     googleMapRef.current = map;
     if (userLocation) placeUserMarker(map, userLocation);
+    if (allUsersRef.current.length > 0) {
+      updateUserLocationMarkers(allUsersRef.current, map);
+    }
   }
 
   // ── Subscribe to all squads from Firestore ─────────────────────────────────
@@ -246,6 +263,24 @@ export default function DiscoverClient({ session }: Props) {
     return unsub;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [firebaseReady]);
+
+  // ── Subscribe to all other users for live location markers ─────────────────
+  useEffect(() => {
+    if (!firebaseReady) return;
+    const unsub = subscribeToUsers(uid, (users) => {
+      allUsersRef.current = users;
+      setAllUsers(users);
+    });
+    return unsub;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid, firebaseReady]);
+
+  // ── Update user location markers whenever users list changes ──────────────
+  useEffect(() => {
+    if (!googleMapRef.current) return;
+    updateUserLocationMarkers(allUsers, googleMapRef.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allUsers]);
 
   // ── Filter nearby squads and update map markers ────────────────────────────
   useEffect(() => {
@@ -269,6 +304,9 @@ export default function DiscoverClient({ session }: Props) {
     map: google.maps.Map,
     loc: { lat: number; lng: number }
   ) {
+    if (!AdvancedMarkerElementRef.current) return;
+    const AdvancedMarkerElement = AdvancedMarkerElementRef.current;
+
     const el = document.createElement("div");
     el.style.cssText =
       "display:flex;flex-direction:column;align-items:center;gap:0;";
@@ -280,9 +318,7 @@ export default function DiscoverClient({ session }: Props) {
       <div style="width:3px;height:14px;background:#1b1b1e;"></div>
       <div style="width:8px;height:4px;background:#1b1b1e;opacity:0.4;border-radius:999px;"></div>`;
 
-    userMarkerRef.current = new (
-      google.maps.marker as any
-    ).AdvancedMarkerElement({
+    userMarkerRef.current = new AdvancedMarkerElement({
       map,
       position: loc,
       content: el,
@@ -292,6 +328,9 @@ export default function DiscoverClient({ session }: Props) {
   }
 
   function updateMapMarkers(squads: Squad[], map: google.maps.Map) {
+    if (!AdvancedMarkerElementRef.current) return;
+    const AdvancedMarkerElement = AdvancedMarkerElementRef.current;
+
     const currentIds = new Set(squads.map((s) => s.id));
 
     // Remove stale markers
@@ -320,7 +359,7 @@ export default function DiscoverClient({ session }: Props) {
         <div style="width:3px;height:18px;background:#1b1b1e;"></div>
         <div style="width:10px;height:5px;background:#1b1b1e;opacity:0.3;border-radius:999px;"></div>`;
 
-      const marker = new (google.maps.marker as any).AdvancedMarkerElement({
+      const marker = new AdvancedMarkerElement({
         map,
         position: squad.location,
         content: el,
@@ -329,6 +368,54 @@ export default function DiscoverClient({ session }: Props) {
 
       el.addEventListener("click", () => setSelectedSquad(squad));
       markerMapRef.current.set(squad.id, marker);
+    });
+  }
+
+  function updateUserLocationMarkers(users: UserProfile[], map: google.maps.Map) {
+    if (!AdvancedMarkerElementRef.current) return;
+    const AdvancedMarkerElement = AdvancedMarkerElementRef.current;
+
+    const usersWithLoc = users.filter((u) => u.location);
+    const currentEmails = new Set(usersWithLoc.map((u) => u.email));
+
+    // Remove stale markers
+    userLocMarkerMapRef.current.forEach((marker, email) => {
+      if (!currentEmails.has(email)) {
+        (marker as any).map = null;
+        userLocMarkerMapRef.current.delete(email);
+      }
+    });
+
+    // Add or update markers
+    usersWithLoc.forEach((person) => {
+      if (!person.location) return;
+      const existing = userLocMarkerMapRef.current.get(person.email);
+      if (existing) {
+        existing.position = person.location;
+        return;
+      }
+
+      const initial = (person.displayName || "?").charAt(0).toUpperCase();
+      const el = document.createElement("div");
+      el.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:0;";
+      el.innerHTML = `
+        <div style="position:relative;width:40px;height:40px;border-radius:50%;border:3px solid #1b1b1e;box-shadow:3px 3px 0 #1b1b1e;overflow:hidden;background:#ffd8e7;flex-shrink:0;">
+          ${person.photoURL
+            ? `<img src="${person.photoURL}" style="width:100%;height:100%;object-fit:cover;" />`
+            : `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:#9f376f;font-family:var(--font-bricolage),'Bricolage Grotesque',sans-serif;">${initial}</div>`
+          }
+        </div>
+        <div style="width:3px;height:10px;background:#1b1b1e;"></div>
+        <div style="width:8px;height:4px;background:#1b1b1e;opacity:0.35;border-radius:999px;"></div>`;
+
+      const marker = new AdvancedMarkerElement({
+        map,
+        position: person.location,
+        content: el,
+        title: person.displayName || "User",
+      });
+
+      userLocMarkerMapRef.current.set(person.email, marker);
     });
   }
 
@@ -568,7 +655,7 @@ export default function DiscoverClient({ session }: Props) {
         {/* Nav */}
         <nav style={{ display: "flex", flexDirection: "column", gap: 6, padding: "0 16px" }}>
           {[
-            { icon: "groups", label: "Squads", key: "squads" },
+            { icon: mySquad ? "chat" : "groups", label: mySquad ? "SQUAD CHAT" : "Squads", key: "squads" },
             { icon: "fingerprint", label: "VERIFY ID", key: "kyc" },
             { icon: "person_search", label: "Recruits", key: "recruits" },
             { icon: "celebration", label: "Host Party", key: "host" },
@@ -743,6 +830,18 @@ export default function DiscoverClient({ session }: Props) {
           overflow: "hidden",
         }}
       >
+        {/* Squad Chat — shown when squads tab active and user is in a squad */}
+        {activeNav === "squads" && mySquad && kycApproved && (
+          <div className="discover-overlay-panel">
+            <SquadChat
+              squad={mySquad}
+              uid={uid}
+              displayName={user.name ?? "Anonymous"}
+              photoURL={user.image ?? ""}
+            />
+          </div>
+        )}
+
         {/* Recruit Directory — shown when recruits tab is active */}
         {activeNav === "recruits" && (
           <div className="discover-overlay-panel">
@@ -761,19 +860,29 @@ export default function DiscoverClient({ session }: Props) {
           </div>
         )}
 
-        {/* Google Map — kept mounted for Google Maps lifecycle, hidden when recruits or kyc tab is active */}
+        {/* Google Map — kept mounted for Google Maps lifecycle, hidden when overlay panels are active */}
         <div
           ref={mapDivRef}
           style={{
             width: "100%",
             height: "100%",
-            visibility: activeNav === "recruits" || activeNav === "kyc" ? "hidden" : "visible",
-            pointerEvents: activeNav === "recruits" || activeNav === "kyc" ? "none" : "auto",
+            visibility:
+              activeNav === "recruits" ||
+              activeNav === "kyc" ||
+              (activeNav === "squads" && !!mySquad && kycApproved)
+                ? "hidden"
+                : "visible",
+            pointerEvents:
+              activeNav === "recruits" ||
+              activeNav === "kyc" ||
+              (activeNav === "squads" && !!mySquad && kycApproved)
+                ? "none"
+                : "auto",
           }}
         />
 
         {/* Loading overlay */}
-        {!mapsReady && activeNav !== "recruits" && activeNav !== "kyc" && (
+        {!mapsReady && activeNav !== "recruits" && activeNav !== "kyc" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
           <div
             style={{
               position: "absolute", inset: 0,
@@ -806,7 +915,7 @@ export default function DiscoverClient({ session }: Props) {
         )}
 
         {/* Location denied notice */}
-        {locationDenied && activeNav !== "recruits" && activeNav !== "kyc" && (
+        {locationDenied && activeNav !== "recruits" && activeNav !== "kyc" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
           <div
             style={{
               position: "absolute", top: 16, left: "50%",
@@ -826,7 +935,7 @@ export default function DiscoverClient({ session }: Props) {
         )}
 
         {/* ── RIGHT OVERLAY PANELS ──────────────────────────────────────── */}
-        {activeNav !== "recruits" && activeNav !== "kyc" && (
+        {activeNav !== "recruits" && activeNav !== "kyc" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
         <div
           style={{
             position: "absolute", right: 24, top: 24,
@@ -887,6 +996,21 @@ export default function DiscoverClient({ session }: Props) {
                 <p style={{ fontSize: 12, color: "#544249", marginTop: 8, fontWeight: 600 }}>
                   {mySquad.memberUids?.length ?? 0}/{mySquad.capacity} members
                 </p>
+                <button
+                  onClick={() => setActiveNav("squads")}
+                  style={{
+                    marginTop: 12, width: "100%",
+                    padding: "8px 12px", backgroundColor: "#9f376f",
+                    color: "white", border: "2.5px solid #1b1b1e",
+                    borderRadius: 6, cursor: "pointer",
+                    fontWeight: 800, fontSize: 12, textTransform: "uppercase",
+                    fontFamily: "inherit", boxShadow: "3px 3px 0 #3d0025",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                  }}
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: 16 }}>chat</span>
+                  OPEN SQUAD CHAT
+                </button>
               </>
             ) : (
               <>
@@ -1254,18 +1378,18 @@ export default function DiscoverClient({ session }: Props) {
 
       {/* ── MOBILE BOTTOM NAV — phone only (< 640px) ─────────────────────── */}
       <div
-        className="sm:hidden"
+        className="flex sm:hidden"
         style={{
           position: "fixed", bottom: 0, left: 0, width: "100%",
           backgroundColor: "#fbf8fc", borderTop: "4px solid #1b1b1e",
-          display: "flex", justifyContent: "space-around",
+          justifyContent: "space-around",
           paddingTop: "10px",
           paddingBottom: "calc(10px + env(safe-area-inset-bottom, 0px))",
           zIndex: 50,
         }}
       >
         {([
-          { icon: "map", label: "MAP", key: "squads" },
+          { icon: mySquad ? "chat" : "map", label: mySquad ? "CHAT" : "MAP", key: "squads" },
           { icon: "person_search", label: "RECRUITS", key: "recruits" },
           { icon: "fingerprint", label: "VERIFY", key: "kyc" },
           { icon: "celebration", label: "HOST", key: "host" },

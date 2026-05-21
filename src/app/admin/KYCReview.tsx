@@ -42,6 +42,7 @@ export default function KYCReview() {
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [firebaseReady, setFirebaseReady] = useState(false);
+  const [firebaseError, setFirebaseError] = useState<string | null>(null);
 
   useEffect(() => {
     authReady.then(() => setFirebaseReady(true));
@@ -49,9 +50,19 @@ export default function KYCReview() {
 
   useEffect(() => {
     if (!firebaseReady) return;
-    const unsub = subscribeToAllKYCSubmissions((subs) => {
-      setSubmissions(subs);
-    });
+    const unsub = subscribeToAllKYCSubmissions(
+      (subs) => {
+        setFirebaseError(null);
+        setSubmissions(subs);
+      },
+      (err) => {
+        setFirebaseError(
+          err.message.includes("permission")
+            ? "Firebase permission denied. Ensure Anonymous Authentication is enabled in Firebase Console → Authentication → Sign-in method."
+            : `Firebase error: ${err.message}`
+        );
+      }
+    );
     return unsub;
   }, [firebaseReady]);
 
@@ -113,6 +124,30 @@ export default function KYCReview() {
 
   return (
     <div>
+      {/* Firebase error banner */}
+      {firebaseError && (
+        <div
+          style={{
+            backgroundColor: "#ffd8e7",
+            border: "3px solid #ba1a1a",
+            borderRadius: 8,
+            padding: "14px 20px",
+            marginBottom: 20,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 12,
+          }}
+        >
+          <span className="material-symbols-outlined" style={{ fontSize: 22, color: "#ba1a1a", flexShrink: 0, marginTop: 1 }}>error</span>
+          <div>
+            <p style={{ fontWeight: 800, fontSize: 13, color: "#ba1a1a", textTransform: "uppercase", marginBottom: 4 }}>
+              Firebase Connection Error
+            </p>
+            <p style={{ fontSize: 12, color: "#544249", fontWeight: 600 }}>{firebaseError}</p>
+          </div>
+        </div>
+      )}
+
       {/* Stats row */}
       <div style={{ display: "flex", gap: 16, marginBottom: 24 }}>
         <div

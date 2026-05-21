@@ -16,6 +16,8 @@ import {
   Timestamp,
   deleteDoc,
   orderBy,
+  deleteField,
+  limit,
 } from "firebase/firestore";
 import { ref, deleteObject } from "firebase/storage";
 import { firebaseApp, storage } from "./firebase";
@@ -288,7 +290,8 @@ export function subscribeToUserKYCStatus(
  * Admin: real-time subscription to all KYC submissions ordered by submittedAt.
  */
 export function subscribeToAllKYCSubmissions(
-  callback: (submissions: KYCSubmission[]) => void
+  callback: (submissions: KYCSubmission[]) => void,
+  onError?: (err: Error) => void
 ): () => void {
   const q = query(
     collection(db, "kycSubmissions"),
@@ -299,7 +302,9 @@ export function subscribeToAllKYCSubmissions(
       (d) => ({ id: d.id, ...d.data() } as KYCSubmission)
     );
     callback(submissions);
-  }, () => {});
+  }, (err) => {
+    if (onError) onError(err);
+  });
 }
 
 /**
@@ -358,6 +363,36 @@ export async function rejectKYC(
 }
 
 /**
+ * Admin: manually approve KYC for a user without a submission doc.
+ * Sets kycStatus = "approved" and a 1-year expiry directly on the user profile.
+ */
+export async function manualApproveKYC(email: string): Promise<void> {
+  const now = Timestamp.now();
+  const expiresAt = Timestamp.fromDate(
+    new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
+  );
+  await updateDoc(doc(db, "users", email), {
+    kycStatus: "approved",
+    kycVerifiedAt: now,
+    kycExpiresAt: expiresAt,
+    kycManualOverride: true,
+  });
+}
+
+/**
+ * Admin: revoke KYC verification for a user.
+ * Clears all KYC fields from the user profile.
+ */
+export async function revokeKYC(email: string): Promise<void> {
+  await updateDoc(doc(db, "users", email), {
+    kycStatus: deleteField(),
+    kycVerifiedAt: deleteField(),
+    kycExpiresAt: deleteField(),
+    kycManualOverride: deleteField(),
+  });
+}
+
+/**
  * Deletes a KYC submission doc and its associated Storage photo.
  * Used when user resubmits after rejection.
  */
@@ -373,4 +408,196 @@ export async function deleteKYCSubmission(
   }
 
   await deleteDoc(doc(db, "kycSubmissions", submissionId));
+}
+
+// ── Squad Chat ─────────────────────────────────────────────────────────────────
+//
+// Required Firestore Security Rules (add to your firebase console):
+//
+// match /squads/{squadId}/messages/{msgId} {
+//   allow read: if request.auth != null;
+//   allow create: if request.auth != null
+//     && request.resource.data.text is string
+//     && request.resource.data.text.size() <= 500;
+// }
+// match /squads/{squadId}/presence/{uid} {
+//   allow read: if request.auth != null;
+//   allow write: if request.auth != null;
+// }
+// match /privateChats/{chatId} {
+//   allow read, update: if request.auth != null
+//     && resource.data.memberUids.hasAny([request.auth.token.email]);
+//   allow create: if request.auth != null;
+// }
+// match /privateChats/{chatId}/messages/{msgId} {
+//   allow read, create: if request.auth != null;
+// }
+
+export interface ChatMessage {
+  id: string;
+  senderUid: string;
+  senderName: string;
+  senderPhotoURL: string;
+  text: string;
+  sentAt: Timestamp;
+  type: "text" | "system";
+}
+
+export interface PresenceEntry {
+  uid: string;
+  displayName: string;
+  photoURL: string;
+  online: boolean;
+  lastSeen: Timestamp;
+}
+
+export interface PrivateChat {
+  id: string;
+  squadId: string;
+  memberUids: string[];
+  memberNames: Record<string, string>;
+  createdBy: string;
+  createdAt: Timestamp;
+  expiresAt: Timestamp;
+  active: boolean;
+}
+
+function sanitizeText(raw: string): string {
+  return raw
+    .replace(/<[^>]*>/g, "")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+    .trim()
+    .slice(0, 500);
+}
+
+export function subscribeToSquadMessages(
+  squadId: string,
+  callback: (msgs: ChatMessage[]) => void
+): () => void {
+  const q = query(
+    collection(db, "squads", squadId, "messages"),
+    orderBy("sentAt", "asc"),
+    limit(80)
+  );
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ChatMessage)));
+  }, () => {});
+}
+
+export async function sendSquadMessage(
+  squadId: string,
+  sender: { uid: string; name: string; photoURL: string },
+  rawText: string
+): Promise<void> {
+  const text = sanitizeText(rawText);
+  if (!text) return;
+  await addDoc(collection(db, "squads", squadId, "messages"), {
+    senderUid: sender.uid,
+    senderName: sender.name,
+    senderPhotoURL: sender.photoURL,
+    text,
+    sentAt: Timestamp.now(),
+    type: "text",
+  });
+}
+
+export async function setSquadPresence(
+  squadId: string,
+  uid: string,
+  displayName: string,
+  photoURL: string,
+  online: boolean
+): Promise<void> {
+  await setDoc(
+    doc(db, "squads", squadId, "presence", uid),
+    { uid, displayName, photoURL, online, lastSeen: Timestamp.now() },
+    { merge: true }
+  );
+}
+
+export function subscribeToSquadPresence(
+  squadId: string,
+  callback: (entries: PresenceEntry[]) => void
+): () => void {
+  return onSnapshot(
+    collection(db, "squads", squadId, "presence"),
+    (snap) => {
+      callback(snap.docs.map((d) => d.data() as PresenceEntry));
+    },
+    () => {}
+  );
+}
+
+export async function createPrivateChat(
+  squadId: string,
+  createdBy: string,
+  memberUids: string[],
+  memberNames: Record<string, string>
+): Promise<string> {
+  const expiresAt = Timestamp.fromDate(
+    new Date(Date.now() + 2 * 60 * 60 * 1000)
+  );
+  const ref = await addDoc(collection(db, "privateChats"), {
+    squadId,
+    memberUids,
+    memberNames,
+    createdBy,
+    createdAt: Timestamp.now(),
+    expiresAt,
+    active: true,
+  });
+  return ref.id;
+}
+
+export function subscribeToMyPrivateChats(
+  uid: string,
+  callback: (chats: PrivateChat[]) => void
+): () => void {
+  const q = query(
+    collection(db, "privateChats"),
+    where("memberUids", "array-contains", uid),
+    where("active", "==", true)
+  );
+  return onSnapshot(q, (snap) => {
+    const now = Date.now();
+    const chats = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() } as PrivateChat))
+      .filter((c) => c.expiresAt.toMillis() > now);
+    callback(chats);
+  }, () => {});
+}
+
+export async function dissolvePrivateChat(chatId: string): Promise<void> {
+  await updateDoc(doc(db, "privateChats", chatId), { active: false });
+}
+
+export function subscribeToPrivateChatMessages(
+  chatId: string,
+  callback: (msgs: ChatMessage[]) => void
+): () => void {
+  const q = query(
+    collection(db, "privateChats", chatId, "messages"),
+    orderBy("sentAt", "asc"),
+    limit(80)
+  );
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ChatMessage)));
+  }, () => {});
+}
+
+export async function sendPrivateChatMessage(
+  chatId: string,
+  sender: { uid: string; name: string; photoURL: string },
+  rawText: string
+): Promise<void> {
+  const text = sanitizeText(rawText);
+  if (!text) return;
+  await addDoc(collection(db, "privateChats", chatId, "messages"), {
+    senderUid: sender.uid,
+    senderName: sender.name,
+    senderPhotoURL: sender.photoURL,
+    text,
+    sentAt: Timestamp.now(),
+    type: "text",
+  });
 }

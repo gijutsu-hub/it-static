@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { subscribeToAllUsers, banUser, unbanUser, type UserProfile } from "@/lib/firestore";
+import { subscribeToAllUsers, banUser, unbanUser, manualApproveKYC, revokeKYC, type UserProfile } from "@/lib/firestore";
 import { authReady } from "@/lib/firebase";
 
 function formatDate(ts: { seconds: number } | null | undefined): string {
@@ -16,6 +16,7 @@ export default function UserManagement() {
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<string | null>(null);
+  const [kycPending, setKycPending] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [firebaseReady, setFirebaseReady] = useState(false);
 
@@ -44,6 +45,31 @@ export default function UserManagement() {
       console.error(e);
     } finally {
       setPending(null);
+    }
+  }
+
+  async function handleKYCAction(user: UserProfile) {
+    setKycPending(user.email);
+    try {
+      if (user.kycStatus === "approved") {
+        await revokeKYC(user.email);
+      } else {
+        await manualApproveKYC(user.email);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setKycPending(null);
+    }
+  }
+
+  function kycBadgeStyle(status: UserProfile["kycStatus"]): { bg: string; color: string; label: string } {
+    switch (status) {
+      case "approved": return { bg: "#4caf50", color: "white", label: "VERIFIED" };
+      case "pending":  return { bg: "#ffe24c", color: "#1b1b1e", label: "PENDING" };
+      case "rejected": return { bg: "#ba1a1a", color: "white", label: "REJECTED" };
+      case "expired":  return { bg: "#877179", color: "white", label: "EXPIRED" };
+      default:         return { bg: "#e4e1e6", color: "#544249", label: "NONE" };
     }
   }
 
@@ -100,7 +126,7 @@ export default function UserManagement() {
         <div
           className="grid font-label-lg text-xs uppercase text-on-surface-variant px-4 py-3"
           style={{
-            gridTemplateColumns: "48px 1fr 1fr 140px 140px 90px 90px",
+            gridTemplateColumns: "48px 1fr 1fr 140px 140px 90px 90px 110px 90px",
             backgroundColor: "#e4e1e6",
             borderBottom: "3px solid #1b1b1e",
           }}
@@ -112,6 +138,8 @@ export default function UserManagement() {
           <span>Last Seen</span>
           <span>Status</span>
           <span>Action</span>
+          <span>KYC</span>
+          <span>KYC Action</span>
         </div>
 
         {loading && (
@@ -137,7 +165,7 @@ export default function UserManagement() {
               key={user.email}
               className="grid items-center px-4 py-3 font-body-md text-sm"
               style={{
-                gridTemplateColumns: "48px 1fr 1fr 140px 140px 90px 90px",
+                gridTemplateColumns: "48px 1fr 1fr 140px 140px 90px 90px 110px 90px",
                 borderBottom: i < filtered.length - 1 ? "2px solid #e4e1e6" : "none",
                 backgroundColor: user.banned ? "#fff0ee" : "transparent",
               }}
@@ -208,6 +236,50 @@ export default function UserManagement() {
                   }}
                 >
                   {pending === user.email ? "…" : user.banned ? "UNBAN" : "BAN"}
+                </button>
+              </span>
+
+              {/* KYC status badge */}
+              <span>
+                {(() => {
+                  const { bg, color, label } = kycBadgeStyle(user.kycStatus);
+                  return (
+                    <span
+                      className="font-label-sm text-[10px] uppercase px-2 py-1 border-2 border-on-surface"
+                      style={{ backgroundColor: bg, color, boxShadow: "2px 2px 0 #1b1b1e" }}
+                    >
+                      {label}
+                    </span>
+                  );
+                })()}
+              </span>
+
+              {/* KYC manual action button */}
+              <span>
+                <button
+                  onClick={() => handleKYCAction(user)}
+                  disabled={kycPending === user.email}
+                  className="font-label-sm text-[10px] uppercase px-3 py-1 border-2 border-on-surface cursor-pointer disabled:opacity-50"
+                  style={{
+                    backgroundColor: user.kycStatus === "approved" ? "#ffdad6" : "#e8fce8",
+                    color: "#1b1b1e",
+                    boxShadow: "2px 2px 0 #1b1b1e",
+                    transition: "transform 0.1s, box-shadow 0.1s",
+                  }}
+                  onMouseEnter={(e) => {
+                    (e.currentTarget as HTMLButtonElement).style.transform = "translate(1px,1px)";
+                    (e.currentTarget as HTMLButtonElement).style.boxShadow = "1px 1px 0 #1b1b1e";
+                  }}
+                  onMouseLeave={(e) => {
+                    (e.currentTarget as HTMLButtonElement).style.transform = "";
+                    (e.currentTarget as HTMLButtonElement).style.boxShadow = "2px 2px 0 #1b1b1e";
+                  }}
+                >
+                  {kycPending === user.email
+                    ? "…"
+                    : user.kycStatus === "approved"
+                    ? "REVOKE"
+                    : "VERIFY"}
                 </button>
               </span>
             </div>
