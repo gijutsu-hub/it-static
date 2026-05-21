@@ -945,3 +945,134 @@ export async function awardBadge(uid: string, badge: string): Promise<void> {
   if (current.includes(badge)) return;
   await updateDoc(userRef, { badges: [...current, badge] });
 }
+
+// ── Treasure Hunts ─────────────────────────────────────────────────────────────
+
+export interface TreasureHunt {
+  id: string;
+  title: string;
+  description: string;
+  coverEmoji: string;
+  active: boolean;
+  createdBy: string;
+  createdAt: Timestamp;
+  totalHints: number;
+  rewardBadge?: string;
+}
+
+export interface HuntHint {
+  id: string;
+  huntId: string;
+  order: number;
+  location: { lat: number; lng: number };
+  riddle: string;
+  clueText: string;
+  radiusMeters: number;
+  imageURL?: string;
+}
+
+export interface HuntProgress {
+  id: string;
+  uid: string;
+  huntId: string;
+  collectedHintIds: string[];
+  completed: boolean;
+  completedAt?: Timestamp;
+  startedAt: Timestamp;
+}
+
+export function subscribeToActiveHunts(
+  callback: (hunts: TreasureHunt[]) => void
+): () => void {
+  const q = query(collection(db, "hunts"), where("active", "==", true));
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as TreasureHunt)));
+  }, () => {});
+}
+
+export function subscribeToHuntHints(
+  huntId: string,
+  callback: (hints: HuntHint[]) => void
+): () => void {
+  const q = query(collection(db, "hints"), where("huntId", "==", huntId), orderBy("order", "asc"));
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as HuntHint)));
+  }, () => {});
+}
+
+export function subscribeToAllHints(
+  callback: (hints: HuntHint[]) => void
+): () => void {
+  return onSnapshot(collection(db, "hints"), (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as HuntHint)));
+  }, () => {});
+}
+
+export function subscribeToMyHuntProgress(
+  uid: string,
+  callback: (progress: HuntProgress[]) => void
+): () => void {
+  const q = query(collection(db, "huntProgress"), where("uid", "==", uid));
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as HuntProgress)));
+  }, () => {});
+}
+
+export async function collectHint(
+  uid: string,
+  huntId: string,
+  hintId: string,
+  totalHints: number,
+  rewardBadge?: string
+): Promise<void> {
+  const progressId = `${uid}_${huntId}`;
+  const progressRef = doc(db, "huntProgress", progressId);
+  const snap = await getDoc(progressRef);
+
+  if (!snap.exists()) {
+    await setDoc(progressRef, {
+      uid, huntId,
+      collectedHintIds: [hintId],
+      completed: false,
+      startedAt: Timestamp.now(),
+    });
+    return;
+  }
+
+  const data = snap.data() as HuntProgress;
+  if (data.collectedHintIds.includes(hintId)) return;
+
+  const updated = [...data.collectedHintIds, hintId];
+  const completed = updated.length >= totalHints;
+
+  await updateDoc(progressRef, {
+    collectedHintIds: updated,
+    completed,
+    ...(completed ? { completedAt: Timestamp.now() } : {}),
+  });
+
+  if (completed && rewardBadge) {
+    await awardBadge(uid, rewardBadge);
+  }
+}
+
+export async function createHunt(data: Omit<TreasureHunt, "id" | "createdAt">): Promise<string> {
+  const ref = await addDoc(collection(db, "hunts"), { ...data, createdAt: Timestamp.now() });
+  return ref.id;
+}
+
+export async function createHuntHint(data: Omit<HuntHint, "id">): Promise<string> {
+  const ref = await addDoc(collection(db, "hints"), data);
+  return ref.id;
+}
+
+// ── Push Subscriptions ─────────────────────────────────────────────────────────
+
+export async function savePushSubscription(uid: string, subscription: PushSubscriptionJSON): Promise<void> {
+  await setDoc(doc(db, "pushSubscriptions", uid), { uid, subscription, updatedAt: Timestamp.now() }, { merge: true });
+}
+
+export async function getPushSubscription(uid: string): Promise<PushSubscriptionJSON | null> {
+  const snap = await getDoc(doc(db, "pushSubscriptions", uid));
+  return snap.exists() ? (snap.data().subscription as PushSubscriptionJSON) : null;
+}

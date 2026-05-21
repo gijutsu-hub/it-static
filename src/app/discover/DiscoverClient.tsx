@@ -15,6 +15,12 @@ import {
   subscribeToPhotoDrops,
   addPhotoDrop,
   subscribeToIncomingCall,
+  subscribeToAllHints,
+  subscribeToFriendRequests,
+  sendFriendRequest,
+  acceptFriendRequest,
+  getOrCreateDMChat,
+  savePushSubscription,
   awardBadge,
   db,
   type Squad,
@@ -22,6 +28,8 @@ import {
   type UserProfile,
   type PhotoDrop,
   type WebRTCCall,
+  type HuntHint,
+  type FriendRequest,
 } from "@/lib/firestore";
 import { authReady, storage } from "@/lib/firebase";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
@@ -30,6 +38,8 @@ import KYCFlow from "./KYCFlow";
 import SquadChat from "./SquadChat";
 import IntelPanel from "./IntelPanel";
 import FriendsDirectory from "./FriendsDirectory";
+import TreasureHuntPanel from "./TreasureHuntPanel";
+import UserProfileModal from "./UserProfileModal";
 import WebRTCCallComponent from "./WebRTCCall";
 import { signOut } from "next-auth/react";
 import QRCode from "qrcode";
@@ -37,6 +47,7 @@ import QRCode from "qrcode";
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || "https://itstatic.app";
 
 const MAPS_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!;
+const MAPS_MAP_ID = process.env.NEXT_PUBLIC_MAPS_MAP_ID ?? "DEMO_MAP_ID";
 
 // distance between two lat/lng points in km (haversine approximation)
 function distanceKm(
@@ -90,13 +101,14 @@ export default function DiscoverClient({ session }: Props) {
   const [allSquads, setAllSquads] = useState<Squad[]>([]);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [nearbySquads, setNearbySquads] = useState<Squad[]>([]);
-  const [activeNav, setActiveNav] = useState<"squads" | "intel" | "recruits" | "kyc" | "friends">(
+  const [activeNav, setActiveNav] = useState<"squads" | "intel" | "recruits" | "kyc" | "friends" | "hunt">(
     "squads"
   );
   const [kycSubmission, setKycSubmission] = useState<KYCSubmission | null | undefined>(undefined);
   const [userProfile, setUserProfile] = useState<UserProfile | null | undefined>(undefined);
   const [firebaseReady, setFirebaseReady] = useState(false);
   const [mapsReady, setMapsReady] = useState(false);
+  const [mapInitialized, setMapInitialized] = useState(false);
   const [locationDenied, setLocationDenied] = useState(false);
   const [selectedSquad, setSelectedSquad] = useState<Squad | null>(null);
   const [joining, setJoining] = useState<string | null>(null);
@@ -119,7 +131,13 @@ export default function DiscoverClient({ session }: Props) {
   const [photoDropFile, setPhotoDropFile] = useState<File | null>(null);
   const [photoDropUploading, setPhotoDropUploading] = useState(false);
   const photoDropMapMarkersRef = useRef<Map<string, google.maps.marker.AdvancedMarkerElement>>(new Map());
+  const hintMarkersRef = useRef<Map<string, google.maps.marker.AdvancedMarkerElement>>(new Map());
   const photoDropFileRef = useRef<HTMLInputElement>(null);
+  const [selectedPhotoDrop, setSelectedPhotoDrop] = useState<PhotoDrop | null>(null);
+  const [selectedUserProfile, setSelectedUserProfile] = useState<UserProfile | null>(null);
+  const [huntHints, setHuntHints] = useState<HuntHint[]>([]);
+  const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([]);
+  const [pushSubscribed, setPushSubscribed] = useState(false);
 
   const AdvancedMarkerElementRef = useRef<typeof google.maps.marker.AdvancedMarkerElement | null>(null);
   const hostMapDivRef = useRef<HTMLDivElement>(null);
@@ -259,12 +277,11 @@ export default function DiscoverClient({ session }: Props) {
 
   function initMap(Map: typeof google.maps.Map) {
     if (!mapDivRef.current) return;
-    // Use already-resolved location if available, fall back to Singapore
     const center = userLocation ?? { lat: 1.3521, lng: 103.8198 };
     const map = new Map(mapDivRef.current, {
       center,
       zoom: userLocation ? 15 : 14,
-      mapId: "RESIST_NET_MAP",
+      mapId: MAPS_MAP_ID,
       disableDefaultUI: true,
       zoomControl: true,
       gestureHandling: "greedy",
@@ -274,6 +291,7 @@ export default function DiscoverClient({ session }: Props) {
     if (allUsersRef.current.length > 0) {
       updateUserLocationMarkers(allUsersRef.current, map);
     }
+    setMapInitialized(true);
   }
 
   // ── Subscribe to all squads from Firestore ─────────────────────────────────
@@ -312,6 +330,42 @@ export default function DiscoverClient({ session }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid, firebaseReady]);
 
+  // ── Subscribe to all hunt hints for map markers ────────────────────────────
+  useEffect(() => {
+    if (!firebaseReady) return;
+    return subscribeToAllHints(setHuntHints);
+  }, [firebaseReady]);
+
+  // ── Subscribe to friend requests (for profile modal status) ───────────────
+  useEffect(() => {
+    if (!firebaseReady) return;
+    return subscribeToFriendRequests(uid, setFriendRequests);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid, firebaseReady]);
+
+  // ── Register web push subscription ────────────────────────────────────────
+  useEffect(() => {
+    if (!firebaseReady || pushSubscribed) return;
+    async function registerPush() {
+      try {
+        const permission = await Notification.requestPermission();
+        if (permission !== "granted") return;
+        const reg = await navigator.serviceWorker.ready;
+        const existing = await reg.pushManager.getSubscription();
+        const sub = existing ?? await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY,
+        });
+        await savePushSubscription(uid, sub.toJSON());
+        setPushSubscribed(true);
+      } catch (e) {
+        console.warn("Push registration failed:", e);
+      }
+    }
+    registerPush();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid, firebaseReady]);
+
   // ── Update user location markers whenever users list changes ──────────────
   useEffect(() => {
     if (!googleMapRef.current) return;
@@ -327,26 +381,68 @@ export default function DiscoverClient({ session }: Props) {
 
     const currentIds = new Set(photoDrops.map((d) => d.id));
     photoDropMapMarkersRef.current.forEach((marker, id) => {
-      if (!currentIds.has(id)) { marker.map = null; photoDropMapMarkersRef.current.delete(id); }
+      if (!currentIds.has(id)) { (marker as any).map = null; photoDropMapMarkersRef.current.delete(id); }
     });
 
     photoDrops.forEach((drop) => {
       if (photoDropMapMarkersRef.current.has(drop.id)) return;
-      const el = document.createElement("div");
-      el.style.cssText = "width:44px;height:44px;border-radius:50%;overflow:hidden;border:3px solid #ffe24c;box-shadow:0 2px 8px rgba(0,0,0,0.4);cursor:pointer;";
-      const img = document.createElement("img");
-      img.src = drop.imageURL;
-      img.style.cssText = "width:100%;height:100%;object-fit:cover;";
-      el.appendChild(img);
-      const marker = new AME({ map, position: drop.location, content: el, zIndex: 5 });
-      marker.addListener("click", () => {
-        setSelectedSquad(null);
-        // Could show drop detail — for now do nothing extra
+      const wrap = document.createElement("div");
+      wrap.style.cssText = "display:flex;flex-direction:column;align-items:center;cursor:pointer;";
+      wrap.innerHTML = `
+        <div style="width:48px;height:48px;border-radius:50%;overflow:hidden;border:3px solid #ffe24c;box-shadow:4px 4px 0 #1b1b1e;background:#1b1b1e;">
+          <img src="${drop.imageURL}" style="width:100%;height:100%;object-fit:cover;" />
+        </div>
+        <div style="background:#ffe24c;border:1.5px solid #1b1b1e;padding:2px 6px;font-size:9px;font-weight:800;text-transform:uppercase;margin-top:2px;white-space:nowrap;max-width:80px;overflow:hidden;text-overflow:ellipsis;">${drop.displayName}</div>
+        <div style="width:2px;height:10px;background:#1b1b1e;"></div>
+        <div style="width:6px;height:3px;background:#1b1b1e;opacity:0.4;border-radius:999px;"></div>`;
+      const marker = new AME({ map, position: drop.location, content: wrap, zIndex: 8 });
+      wrap.addEventListener("click", () => {
+        setSelectedPhotoDrop(drop);
       });
       photoDropMapMarkersRef.current.set(drop.id, marker);
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [photoDrops, mapsReady]);
+  }, [photoDrops, mapInitialized]);
+
+  // ── Treasure hunt hint markers ─────────────────────────────────────────────
+  useEffect(() => {
+    const map = googleMapRef.current;
+    const AME = AdvancedMarkerElementRef.current;
+    if (!map || !AME) return;
+
+    const currentIds = new Set(huntHints.map((h) => h.id));
+    hintMarkersRef.current.forEach((marker, id) => {
+      if (!currentIds.has(id)) { (marker as any).map = null; hintMarkersRef.current.delete(id); }
+    });
+
+    huntHints.forEach((hint) => {
+      if (hintMarkersRef.current.has(hint.id)) return;
+      const dist = userLocation ? Math.round(
+        6371000 * 2 * Math.atan2(
+          Math.sqrt(Math.sin(((hint.location.lat - userLocation.lat) * Math.PI / 180) / 2) ** 2 +
+            Math.cos(userLocation.lat * Math.PI / 180) * Math.cos(hint.location.lat * Math.PI / 180) *
+            Math.sin(((hint.location.lng - userLocation.lng) * Math.PI / 180) / 2) ** 2),
+          Math.sqrt(1 - (Math.sin(((hint.location.lat - userLocation.lat) * Math.PI / 180) / 2) ** 2 +
+            Math.cos(userLocation.lat * Math.PI / 180) * Math.cos(hint.location.lat * Math.PI / 180) *
+            Math.sin(((hint.location.lng - userLocation.lng) * Math.PI / 180) / 2) ** 2))
+        )
+      ) : null;
+      const inRange = dist !== null && dist <= hint.radiusMeters;
+
+      const el = document.createElement("div");
+      el.style.cssText = "display:flex;flex-direction:column;align-items:center;cursor:pointer;";
+      el.innerHTML = `
+        <div style="width:40px;height:40px;border-radius:50%;background:${inRange ? "#ffe24c" : "#1b1b1e"};border:3px solid ${inRange ? "#1b1b1e" : "#ffe24c"};box-shadow:4px 4px 0 ${inRange ? "#1b1b1e" : "#ffe24c"};display:flex;align-items:center;justify-content:center;${inRange ? "animation:pulse2 1.2s infinite;" : ""}">
+          <span style="font-size:20px;">${inRange ? "🎁" : "🔒"}</span>
+        </div>
+        <div style="width:2px;height:10px;background:#1b1b1e;"></div>
+        <div style="width:6px;height:3px;background:#1b1b1e;opacity:0.4;border-radius:999px;"></div>`;
+
+      const marker = new AME({ map, position: hint.location, content: el, zIndex: 15 });
+      hintMarkersRef.current.set(hint.id, marker);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [huntHints, mapInitialized, userLocation]);
 
   // ── Filter nearby squads and update map markers ────────────────────────────
   useEffect(() => {
@@ -481,6 +577,10 @@ export default function DiscoverClient({ session }: Props) {
         title: person.displayName || "User",
       });
 
+      el.addEventListener("click", () => {
+        setSelectedUserProfile(person);
+      });
+
       userLocMarkerMapRef.current.set(person.email, marker);
     });
   }
@@ -503,6 +603,15 @@ export default function DiscoverClient({ session }: Props) {
       setJoining(null);
       setSelectedSquad(null);
     }
+  }
+
+  function getFriendStatus(theirUid: string): "none" | "sent" | "received" | "friends" {
+    const req = friendRequests.find((r) => r.participants.includes(theirUid));
+    if (!req) return "none";
+    if (req.status === "accepted") return "friends";
+    if (req.status === "pending" && req.fromUid === uid) return "sent";
+    if (req.status === "pending" && req.toUid === uid) return "received";
+    return "none";
   }
 
   async function handlePhotoDrop() {
@@ -767,6 +876,7 @@ export default function DiscoverClient({ session }: Props) {
             { icon: "person_search", label: "Recruits", key: "recruits" },
             { icon: "diversity_3", label: "Friends", key: "friends" },
             { icon: "article", label: "Intel", key: "intel" },
+            { icon: "explore", label: "HUNT", key: "hunt" },
           ].map((item) => {
             const isActive = activeNav === item.key;
             const isKyc = item.key === "kyc";
@@ -968,6 +1078,13 @@ export default function DiscoverClient({ session }: Props) {
           </div>
         )}
 
+        {/* Treasure Hunt panel */}
+        {activeNav === "hunt" && (
+          <div className="discover-overlay-panel">
+            <TreasureHuntPanel uid={uid} userLocation={userLocation} />
+          </div>
+        )}
+
         {/* Google Map — kept mounted for Google Maps lifecycle, hidden when overlay panels are active */}
         <div
           ref={mapDivRef}
@@ -979,6 +1096,7 @@ export default function DiscoverClient({ session }: Props) {
               activeNav === "kyc" ||
               activeNav === "intel" ||
               activeNav === "friends" ||
+              activeNav === "hunt" ||
               (activeNav === "squads" && !!mySquad && kycApproved)
                 ? "hidden"
                 : "visible",
@@ -987,6 +1105,7 @@ export default function DiscoverClient({ session }: Props) {
               activeNav === "kyc" ||
               activeNav === "intel" ||
               activeNav === "friends" ||
+              activeNav === "hunt" ||
               (activeNav === "squads" && !!mySquad && kycApproved)
                 ? "none"
                 : "auto",
@@ -994,7 +1113,7 @@ export default function DiscoverClient({ session }: Props) {
         />
 
         {/* Loading overlay */}
-        {!mapsReady && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
+        {!mapsReady && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "hunt" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
           <div
             style={{
               position: "absolute", inset: 0,
@@ -1027,7 +1146,7 @@ export default function DiscoverClient({ session }: Props) {
         )}
 
         {/* Location denied notice */}
-        {locationDenied && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
+        {locationDenied && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "hunt" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
           <div
             style={{
               position: "absolute", top: 16, left: "50%",
@@ -1064,7 +1183,7 @@ export default function DiscoverClient({ session }: Props) {
         )}
 
         {/* ── RIGHT OVERLAY PANELS ──────────────────────────────────────── */}
-        {activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
+        {activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "hunt" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
         <div
           style={{
             position: "absolute", right: 24, top: 24,
@@ -1368,6 +1487,64 @@ export default function DiscoverClient({ session }: Props) {
         </div>
       )}
 
+      {/* ── USER PROFILE MODAL ───────────────────────────────────────────── */}
+      {selectedUserProfile && (
+        <UserProfileModal
+          profile={selectedUserProfile}
+          myUid={uid}
+          friendStatus={getFriendStatus(selectedUserProfile.email)}
+          onClose={() => setSelectedUserProfile(null)}
+          onConnect={async () => {
+            const fs = getFriendStatus(selectedUserProfile.email);
+            if (fs === "received") {
+              const req = friendRequests.find((r) => r.participants.includes(selectedUserProfile.email) && r.status === "pending" && r.toUid === uid);
+              if (req) await acceptFriendRequest(req.id);
+            } else if (fs === "none") {
+              await sendFriendRequest(uid, selectedUserProfile.email);
+            }
+            setSelectedUserProfile(null);
+          }}
+          onMessage={async () => {
+            const chatId = await getOrCreateDMChat(uid, selectedUserProfile.email, { [uid]: user.name ?? "", [selectedUserProfile.email]: selectedUserProfile.displayName }, { [uid]: user.image ?? "", [selectedUserProfile.email]: selectedUserProfile.photoURL });
+            setSelectedUserProfile(null);
+            setActiveNav("friends");
+            void chatId;
+          }}
+          onCall={() => {
+            setWebRTCCall({ theirUid: selectedUserProfile.email, theirName: selectedUserProfile.displayName, mode: "caller" });
+            setSelectedUserProfile(null);
+          }}
+        />
+      )}
+
+      {/* ── PHOTO DROP DETAIL ─────────────────────────────────────────────── */}
+      {selectedPhotoDrop && (
+        <div
+          style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.8)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={() => setSelectedPhotoDrop(null)}
+        >
+          <div onClick={(e) => e.stopPropagation()} style={{ backgroundColor: "#1b1b1e", border: "4px solid #ffe24c", boxShadow: "8px 8px 0 #ffe24c", maxWidth: 400, width: "100%", overflow: "hidden" }}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={selectedPhotoDrop.imageURL} alt="" style={{ width: "100%", maxHeight: 320, objectFit: "cover", display: "block" }} />
+            <div style={{ padding: "14px 16px", display: "flex", alignItems: "center", gap: 10 }}>
+              {selectedPhotoDrop.photoURL && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={selectedPhotoDrop.photoURL} alt="" style={{ width: 32, height: 32, borderRadius: "50%", border: "2px solid #ffe24c", objectFit: "cover", flexShrink: 0 }} />
+              )}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ fontWeight: 800, fontSize: 12, textTransform: "uppercase", color: "#fbf8fc" }}>{selectedPhotoDrop.displayName}</p>
+                {selectedPhotoDrop.caption && (
+                  <p style={{ fontSize: 11, color: "#ffe24c", fontWeight: 600, marginTop: 2 }}>{selectedPhotoDrop.caption}</p>
+                )}
+              </div>
+              <button onClick={() => setSelectedPhotoDrop(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#fbf8fc" }}>
+                <span className="material-symbols-outlined" style={{ fontSize: 22 }}>close</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── PHOTO DROP MODAL ─────────────────────────────────────────────── */}
       {showPhotoDropModal && (
         <div
@@ -1653,11 +1830,11 @@ export default function DiscoverClient({ session }: Props) {
           { icon: mySquad ? "chat" : "map", label: mySquad ? "CHAT" : "MAP", key: "squads" },
           { icon: "person_search", label: "RECRUITS", key: "recruits" },
           { icon: "diversity_3", label: "FRIENDS", key: "friends" },
-          { icon: "fingerprint", label: "VERIFY", key: "kyc" },
+          { icon: "explore", label: "HUNT", key: "hunt" },
           { icon: "article", label: "INTEL", key: "intel" },
         ] as const).map((item) => {
           const isActive = activeNav === item.key;
-          const isLocked = !kycApproved && item.key !== "kyc";
+          const isLocked = !kycApproved;
           return (
             <button
               key={item.key}

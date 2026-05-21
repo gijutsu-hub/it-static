@@ -6,6 +6,7 @@ import UserManagement from "./UserManagement";
 import KYCReview from "./KYCReview";
 import SquadManagement from "./SquadManagement";
 import AnalyticsDashboard from "./AnalyticsDashboard";
+import HuntManager from "./HuntManager";
 
 export const metadata: Metadata = { title: "Admin — IT'S STATIC" };
 
@@ -103,6 +104,12 @@ export default async function AdminPage() {
         <section>
           <SectionHeader title="Push Notifications" />
           <NotificationSender />
+        </section>
+
+        {/* ── Treasure Hunts ──────────────────────────────────────── */}
+        <section>
+          <SectionHeader title="🗺️ Treasure Hunts" />
+          <HuntManager />
         </section>
 
       </main>
