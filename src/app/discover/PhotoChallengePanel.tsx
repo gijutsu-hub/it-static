@@ -12,9 +12,10 @@ interface Props {
   uid: string;
   userPoints: number;
   onStartGuess: (challenge: PhotoChallenge) => void;
+  onOpenCreateChallenge?: () => void;
 }
 
-export default function PhotoChallengePanel({ uid, userPoints, onStartGuess }: Props) {
+export default function PhotoChallengePanel({ uid, userPoints, onStartGuess, onOpenCreateChallenge }: Props) {
   const [tab, setTab] = useState<"guess" | "mine">("guess");
   const [challenges, setChallenges] = useState<PhotoChallenge[]>([]);
   const [myGuesses, setMyGuesses] = useState<PhotoChallengeGuess[]>([]);
@@ -49,10 +50,26 @@ export default function PhotoChallengePanel({ uid, userPoints, onStartGuess }: P
               Guess where photos were taken · earn points
             </p>
           </div>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ background: "#ffe24c", border: "2px solid #1b1b1e", padding: "4px 10px", boxShadow: "2px 2px 0 #1b1b1e" }}>
-              <span style={{ fontWeight: 900, fontSize: 16, color: "#1b1b1e" }}>{userPoints}</span>
-              <span style={{ fontWeight: 700, fontSize: 9, color: "#544249", textTransform: "uppercase", display: "block" }}>POINTS</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {onOpenCreateChallenge && (
+              <button
+                onClick={onOpenCreateChallenge}
+                style={{
+                  background: "#9f376f", border: "2px solid #1b1b1e", padding: "6px 10px",
+                  boxShadow: "2px 2px 0 #1b1b1e", cursor: "pointer", display: "flex",
+                  alignItems: "center", gap: 4, fontWeight: 800, fontSize: 10,
+                  textTransform: "uppercase", color: "white", fontFamily: "inherit",
+                }}
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: 14, fontVariationSettings: "'FILL' 1" }}>add_location</span>
+                NEW
+              </button>
+            )}
+            <div style={{ textAlign: "right" }}>
+              <div style={{ background: "#ffe24c", border: "2px solid #1b1b1e", padding: "4px 10px", boxShadow: "2px 2px 0 #1b1b1e" }}>
+                <span style={{ fontWeight: 900, fontSize: 16, color: "#1b1b1e" }}>{userPoints}</span>
+                <span style={{ fontWeight: 700, fontSize: 9, color: "#544249", textTransform: "uppercase", display: "block" }}>POINTS</span>
+              </div>
             </div>
           </div>
         </div>

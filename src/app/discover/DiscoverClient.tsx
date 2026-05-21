@@ -15,6 +15,7 @@ import {
   subscribeToPhotoDrops,
   addPhotoDrop,
   createPhotoChallenge,
+  subscribeToPhotoChallenges,
   subscribeToIncomingCall,
   subscribeToAllHints,
   subscribeToFriendRequests,
@@ -140,6 +141,7 @@ export default function DiscoverClient({ session }: Props) {
   const [photoDropFile, setPhotoDropFile] = useState<File | null>(null);
   const [photoDropUploading, setPhotoDropUploading] = useState(false);
   const photoDropMapMarkersRef = useRef<Map<string, google.maps.marker.AdvancedMarkerElement>>(new Map());
+  const challengeMarkersRef = useRef<Map<string, google.maps.marker.AdvancedMarkerElement>>(new Map());
   const hintMarkersRef = useRef<Map<string, google.maps.marker.AdvancedMarkerElement>>(new Map());
   const photoDropFileRef = useRef<HTMLInputElement>(null);
   const [selectedPhotoDrop, setSelectedPhotoDrop] = useState<PhotoDrop | null>(null);
@@ -150,6 +152,12 @@ export default function DiscoverClient({ session }: Props) {
   const [guessMode, setGuessMode] = useState<{ challenge: PhotoChallenge } | null>(null);
   const [guessResult, setGuessResult] = useState<{ isCorrect: boolean; distanceMeters: number } | null>(null);
   const [guessSubmitting, setGuessSubmitting] = useState(false);
+  const [photoChallenges, setPhotoChallenges] = useState<PhotoChallenge[]>([]);
+  const [showCreateChallengeModal, setShowCreateChallengeModal] = useState(false);
+  const [createChallengeFile, setCreateChallengeFile] = useState<File | null>(null);
+  const [createChallengeCaption, setCreateChallengeCaption] = useState("");
+  const [createChallengeUploading, setCreateChallengeUploading] = useState(false);
+  const createChallengeFileRef = useRef<HTMLInputElement>(null);
   const guessPinMarkerRef = useRef<google.maps.marker.AdvancedMarkerElement | null>(null);
   const [squadPhotos, setSquadPhotos] = useState<SquadPhoto[]>([]);
   const squadPhotoMarkersRef = useRef<Map<string, google.maps.marker.AdvancedMarkerElement>>(new Map());
@@ -336,6 +344,12 @@ export default function DiscoverClient({ session }: Props) {
     return subscribeToPhotoDrops(setPhotoDrops);
   }, [firebaseReady]);
 
+  // ── Subscribe to all photo challenges (for map markers) ───────────────────
+  useEffect(() => {
+    if (!firebaseReady) return;
+    return subscribeToPhotoChallenges(setPhotoChallenges);
+  }, [firebaseReady]);
+
   // ── Listen for incoming WebRTC calls ───────────────────────────────────────
   useEffect(() => {
     if (!firebaseReady) return;
@@ -455,6 +469,46 @@ export default function DiscoverClient({ session }: Props) {
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photoDrops, mapInitialized]);
+
+  // ── Standalone challenge map markers ──────────────────────────────────────
+  useEffect(() => {
+    const map = googleMapRef.current;
+    const AME = AdvancedMarkerElementRef.current;
+    if (!map || !AME) return;
+
+    const standaloneChallenges = photoChallenges.filter((c) => c.isStandalone);
+    const currentIds = new Set(standaloneChallenges.map((c) => c.id));
+    challengeMarkersRef.current.forEach((marker, id) => {
+      if (!currentIds.has(id)) { (marker as any).map = null; challengeMarkersRef.current.delete(id); }
+    });
+
+    standaloneChallenges.forEach((challenge) => {
+      if (challengeMarkersRef.current.has(challenge.id)) return;
+      const wrap = document.createElement("div");
+      wrap.style.cssText = "display:flex;flex-direction:column;align-items:center;cursor:pointer;";
+      wrap.innerHTML = `
+        <div style="background:#3d0025;border:3px solid #9f376f;box-shadow:4px 4px 0 #9f376f;overflow:hidden;max-width:160px;">
+          <div style="background:#9f376f;padding:2px 8px;text-align:center;">
+            <span style="color:#ffe24c;font-size:8px;font-weight:900;text-transform:uppercase;letter-spacing:0.05em;">📍 CHALLENGE</span>
+          </div>
+          <img src="${challenge.imageURL}" style="width:160px;height:90px;object-fit:cover;display:block;" />
+          <div style="padding:4px 8px;">
+            <div style="color:#ffd8e7;font-size:9px;font-weight:800;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${challenge.displayName}</div>
+            <div style="color:#9f376f;font-size:8px;font-weight:700;">${challenge.totalGuesses} guesses</div>
+          </div>
+        </div>
+        <div style="width:2px;height:10px;background:#9f376f;"></div>
+        <div style="width:6px;height:3px;background:#9f376f;opacity:0.6;border-radius:999px;"></div>`;
+      const marker = new AME({ map, position: challenge.location, content: wrap, zIndex: 9 });
+      wrap.addEventListener("click", () => {
+        setGuessMode({ challenge });
+        setGuessResult(null);
+        setActiveNav("squads");
+      });
+      challengeMarkersRef.current.set(challenge.id, marker);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photoChallenges, mapInitialized]);
 
   // ── Squad photo map markers ───────────────────────────────────────────────
   useEffect(() => {
@@ -642,9 +696,11 @@ export default function DiscoverClient({ session }: Props) {
     if (!AdvancedMarkerElementRef.current) return;
     const AdvancedMarkerElement = AdvancedMarkerElementRef.current;
 
-    const usersWithLoc = users.filter((u) => u.location);
-    const currentEmails = new Set(usersWithLoc.map((u) => u.email));
     const nowMs = Date.now();
+    const usersWithLoc = users.filter(
+      (u) => u.location && nowMs - (u.lastSeen?.toMillis?.() ?? 0) < 6 * 60 * 1000
+    );
+    const currentEmails = new Set(usersWithLoc.map((u) => u.email));
 
     // Remove stale markers
     userLocMarkerMapRef.current.forEach((marker, email) => {
@@ -663,16 +719,14 @@ export default function DiscoverClient({ session }: Props) {
         userLocMarkerMapRef.current.delete(person.email);
       }
 
-      const lastSeenMs = person.lastSeen?.toMillis?.() ?? 0;
-      const isLive = nowMs - lastSeenMs < 6 * 60 * 1000; // seen within 6 min
       const initial = (person.displayName || "?").charAt(0).toUpperCase();
 
       const el = document.createElement("div");
       el.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:0;";
       el.innerHTML = `
         <div style="position:relative;display:flex;flex-direction:column;align-items:center;">
-          ${isLive ? `<div style="background:#4caf50;color:white;font-size:7px;font-weight:900;text-transform:uppercase;padding:1px 5px;border:1.5px solid #1b1b1e;letter-spacing:0.05em;margin-bottom:2px;">LIVE</div>` : ""}
-          <div style="position:relative;width:40px;height:40px;border-radius:50%;border:3px solid ${isLive ? "#4caf50" : "#1b1b1e"};box-shadow:3px 3px 0 ${isLive ? "#4caf50" : "#1b1b1e"};overflow:hidden;background:#ffd8e7;flex-shrink:0;">
+          <div style="background:#4caf50;color:white;font-size:7px;font-weight:900;text-transform:uppercase;padding:1px 5px;border:1.5px solid #1b1b1e;letter-spacing:0.05em;margin-bottom:2px;">LIVE</div>
+          <div style="position:relative;width:40px;height:40px;border-radius:50%;border:3px solid #4caf50;box-shadow:3px 3px 0 #4caf50;overflow:hidden;background:#ffd8e7;flex-shrink:0;">
             ${person.photoURL
               ? `<img src="${person.photoURL}" style="width:100%;height:100%;object-fit:cover;" />`
               : `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:#9f376f;font-family:var(--font-bricolage),'Bricolage Grotesque',sans-serif;">${initial}</div>`
@@ -730,6 +784,20 @@ export default function DiscoverClient({ session }: Props) {
     if (!photoDropFile || !userLocation) return;
     setPhotoDropUploading(true);
     try {
+      // Get freshest GPS before tagging the photo
+      const freshLoc = await new Promise<{ lat: number; lng: number }>((resolve) => {
+        if (!("geolocation" in navigator)) { resolve(userLocation); return; }
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+            setUserLocation(loc);
+            upsertUser(uid, { displayName: user.name ?? "Anonymous", photoURL: user.image ?? "", location: loc }).catch(() => {});
+            resolve(loc);
+          },
+          () => resolve(userLocation),
+          { enableHighAccuracy: true, timeout: 8000 }
+        );
+      });
       const path = `photoDrops/${uid}/${Date.now()}_${photoDropFile.name}`;
       const sRef = storageRef(storage, path);
       await uploadBytes(sRef, photoDropFile);
@@ -740,7 +808,7 @@ export default function DiscoverClient({ session }: Props) {
         photoURL: user.image ?? "",
         imageURL,
         storagePath: path,
-        location: userLocation,
+        location: freshLoc,
         caption: photoDropCaption.trim().slice(0, 150),
       });
       // Also create a photo challenge for others to guess
@@ -750,7 +818,7 @@ export default function DiscoverClient({ session }: Props) {
         photoURL: user.image ?? "",
         imageURL,
         storagePath: path,
-        location: userLocation,
+        location: freshLoc,
         caption: photoDropCaption.trim().slice(0, 150),
       });
       awardBadge(uid, "explorer").catch(() => {});
@@ -761,6 +829,47 @@ export default function DiscoverClient({ session }: Props) {
       console.error(e);
     } finally {
       setPhotoDropUploading(false);
+    }
+  }
+
+  async function handleCreateChallenge() {
+    if (!createChallengeFile || !userLocation) return;
+    setCreateChallengeUploading(true);
+    try {
+      const freshLoc = await new Promise<{ lat: number; lng: number }>((resolve) => {
+        if (!("geolocation" in navigator)) { resolve(userLocation); return; }
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+            setUserLocation(loc);
+            upsertUser(uid, { displayName: user.name ?? "Anonymous", photoURL: user.image ?? "", location: loc }).catch(() => {});
+            resolve(loc);
+          },
+          () => resolve(userLocation),
+          { enableHighAccuracy: true, timeout: 8000 }
+        );
+      });
+      const path = `photoChallenges/${uid}/${Date.now()}_${createChallengeFile.name}`;
+      const sRef = storageRef(storage, path);
+      await uploadBytes(sRef, createChallengeFile);
+      const imageURL = await getDownloadURL(sRef);
+      await createPhotoChallenge({
+        uid,
+        displayName: user.name ?? "Anonymous",
+        photoURL: user.image ?? "",
+        imageURL,
+        storagePath: path,
+        location: freshLoc,
+        caption: createChallengeCaption.trim().slice(0, 150),
+        isStandalone: true,
+      });
+      setShowCreateChallengeModal(false);
+      setCreateChallengeFile(null);
+      setCreateChallengeCaption("");
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setCreateChallengeUploading(false);
     }
   }
 
@@ -1262,6 +1371,10 @@ export default function DiscoverClient({ session }: Props) {
                 setGuessMode({ challenge });
                 setGuessResult(null);
               }}
+              onOpenCreateChallenge={() => {
+                setShowCreateChallengeModal(true);
+                setActiveNav("squads");
+              }}
             />
           </div>
         )}
@@ -1428,6 +1541,23 @@ export default function DiscoverClient({ session }: Props) {
             title="Drop a photo on the map"
           >
             <span className="material-symbols-outlined" style={{ fontSize: 24, color: "#1b1b1e", fontVariationSettings: "'FILL' 1" }}>add_a_photo</span>
+          </button>
+        )}
+
+        {/* ── CREATE CHALLENGE FAB ─────────────────────────────────────── */}
+        {activeNav === "squads" && kycApproved && userLocation && (
+          <button
+            onClick={() => setShowCreateChallengeModal(true)}
+            style={{
+              position: "absolute", left: 84, bottom: 80, zIndex: 20,
+              width: 52, height: 52, borderRadius: "50%",
+              backgroundColor: "#9f376f", border: "3px solid #1b1b1e",
+              boxShadow: "4px 4px 0 #1b1b1e", cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}
+            title="Create a photo challenge"
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: 24, color: "white", fontVariationSettings: "'FILL' 1" }}>emoji_events</span>
           </button>
         )}
 
@@ -1867,6 +1997,94 @@ export default function DiscoverClient({ session }: Props) {
                 }}
               >
                 {photoDropUploading ? "UPLOADING…" : "DROP IT"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── CREATE CHALLENGE MODAL ───────────────────────────────────────────── */}
+      {showCreateChallengeModal && (
+        <div
+          style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.65)", zIndex: 110, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={() => { if (!createChallengeUploading) setShowCreateChallengeModal(false); }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ backgroundColor: "#fbf8fc", border: "4px solid #1b1b1e", boxShadow: "10px 10px 0 #1b1b1e", padding: 28, width: "100%", maxWidth: 420 }}
+          >
+            <p style={{ fontFamily: "var(--font-bricolage,'Bricolage Grotesque',sans-serif)", fontWeight: 900, fontSize: 18, textTransform: "uppercase", marginBottom: 4, color: "#9f376f" }}>📍 CREATE CHALLENGE</p>
+            <p style={{ fontSize: 11, color: "#544249", fontWeight: 600, marginBottom: 20 }}>Post a photo — others guess where it was taken · tagged at your live GPS · lasts 24h</p>
+
+            <input
+              type="file"
+              accept="image/*"
+              ref={createChallengeFileRef}
+              style={{ display: "none" }}
+              onChange={(e) => setCreateChallengeFile(e.target.files?.[0] ?? null)}
+            />
+            <button
+              onClick={() => createChallengeFileRef.current?.click()}
+              style={{
+                width: "100%", padding: "14px", border: "3px dashed #9f376f", backgroundColor: createChallengeFile ? "#ffd8e7" : "#f6f2f7",
+                cursor: "pointer", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                fontWeight: 700, fontSize: 12, textTransform: "uppercase", fontFamily: "inherit",
+              }}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: 20, fontVariationSettings: "'FILL' 1", color: "#9f376f" }}>add_a_photo</span>
+              {createChallengeFile ? createChallengeFile.name : "CHOOSE PHOTO"}
+            </button>
+
+            {createChallengeFile && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={URL.createObjectURL(createChallengeFile)}
+                alt="preview"
+                style={{ width: "100%", height: 160, objectFit: "cover", border: "2px solid #9f376f", marginBottom: 14 }}
+              />
+            )}
+
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", backgroundColor: "#ffd8e7", border: "2px solid #9f376f", marginBottom: 14 }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 16, color: "#9f376f", fontVariationSettings: "'FILL' 1" }}>my_location</span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#9f376f" }}>
+                {userLocation ? `Live GPS: ${userLocation.lat.toFixed(5)}, ${userLocation.lng.toFixed(5)}` : "Fetching your location…"}
+              </span>
+            </div>
+
+            <input
+              type="text"
+              placeholder="Add a caption… (optional)"
+              value={createChallengeCaption}
+              onChange={(e) => setCreateChallengeCaption(e.target.value)}
+              maxLength={150}
+              style={{
+                width: "100%", padding: "10px 14px", border: "2px solid #1b1b1e",
+                fontSize: 13, fontFamily: "inherit", fontWeight: 600,
+                backgroundColor: "#fbf8fc", outline: "none", marginBottom: 20, boxSizing: "border-box",
+              }}
+            />
+
+            <div style={{ display: "flex", gap: 10 }}>
+              <button
+                onClick={() => setShowCreateChallengeModal(false)}
+                disabled={createChallengeUploading}
+                style={{ flex: 1, padding: "12px", border: "2px solid #1b1b1e", backgroundColor: "#fbf8fc", fontWeight: 700, fontSize: 12, textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit" }}
+              >
+                CANCEL
+              </button>
+              <button
+                onClick={handleCreateChallenge}
+                disabled={!createChallengeFile || createChallengeUploading || !userLocation}
+                style={{
+                  flex: 2, padding: "12px", border: "3px solid #1b1b1e",
+                  backgroundColor: !createChallengeFile || createChallengeUploading || !userLocation ? "#e4e1e6" : "#9f376f",
+                  color: !createChallengeFile || createChallengeUploading || !userLocation ? "#1b1b1e" : "white",
+                  fontWeight: 800, fontSize: 13, textTransform: "uppercase",
+                  cursor: !createChallengeFile || createChallengeUploading || !userLocation ? "not-allowed" : "pointer",
+                  fontFamily: "inherit", boxShadow: !createChallengeFile || createChallengeUploading || !userLocation ? "none" : "4px 4px 0 #1b1b1e",
+                }}
+              >
+                {createChallengeUploading ? "POSTING…" : "POST CHALLENGE"}
               </button>
             </div>
           </div>

@@ -10,9 +10,10 @@ interface Props {
   userLocation: { lat: number; lng: number } | null;
   userPoints: number;
   onStartGuess: (challenge: PhotoChallenge) => void;
+  onOpenCreateChallenge?: () => void;
 }
 
-export default function ExplorePanel({ uid, userLocation, userPoints, onStartGuess }: Props) {
+export default function ExplorePanel({ uid, userLocation, userPoints, onStartGuess, onOpenCreateChallenge }: Props) {
   const [tab, setTab] = useState<"hunts" | "challenges">("hunts");
 
   const tabStyle = (active: boolean) => ({
@@ -43,7 +44,7 @@ export default function ExplorePanel({ uid, userLocation, userPoints, onStartGue
         {tab === "hunts" ? (
           <TreasureHuntPanel uid={uid} userLocation={userLocation} />
         ) : (
-          <PhotoChallengePanel uid={uid} userPoints={userPoints} onStartGuess={onStartGuess} />
+          <PhotoChallengePanel uid={uid} userPoints={userPoints} onStartGuess={onStartGuess} onOpenCreateChallenge={onOpenCreateChallenge} />
         )}
       </div>
     </div>

@@ -1146,6 +1146,7 @@ export interface PhotoChallenge {
   expiresAt: Timestamp;
   totalGuesses: number;
   correctGuesses: number;
+  isStandalone?: boolean;
 }
 
 export interface PhotoChallengeGuess {
@@ -1179,6 +1180,7 @@ export async function createPhotoChallenge(data: {
   storagePath: string;
   location: { lat: number; lng: number };
   caption: string;
+  isStandalone?: boolean;
 }): Promise<string> {
   const expiresAt = Timestamp.fromDate(new Date(Date.now() + 24 * 60 * 60 * 1000));
   const ref = await addDoc(collection(db, "photoChallenges"), {
