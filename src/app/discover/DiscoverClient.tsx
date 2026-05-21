@@ -12,16 +12,25 @@ import {
   upsertUser,
   subscribeToUserKYCStatus,
   issueTicket,
+  subscribeToPhotoDrops,
+  addPhotoDrop,
+  subscribeToIncomingCall,
+  awardBadge,
   db,
   type Squad,
   type KYCSubmission,
   type UserProfile,
+  type PhotoDrop,
+  type WebRTCCall,
 } from "@/lib/firestore";
-import { authReady } from "@/lib/firebase";
+import { authReady, storage } from "@/lib/firebase";
+import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import RecruitDirectory from "./RecruitDirectory";
 import KYCFlow from "./KYCFlow";
 import SquadChat from "./SquadChat";
 import IntelPanel from "./IntelPanel";
+import FriendsDirectory from "./FriendsDirectory";
+import WebRTCCallComponent from "./WebRTCCall";
 import { signOut } from "next-auth/react";
 import QRCode from "qrcode";
 
@@ -81,7 +90,7 @@ export default function DiscoverClient({ session }: Props) {
   const [allSquads, setAllSquads] = useState<Squad[]>([]);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [nearbySquads, setNearbySquads] = useState<Squad[]>([]);
-  const [activeNav, setActiveNav] = useState<"squads" | "signals" | "intel" | "recruits" | "kyc">(
+  const [activeNav, setActiveNav] = useState<"squads" | "intel" | "recruits" | "kyc" | "friends">(
     "squads"
   );
   const [kycSubmission, setKycSubmission] = useState<KYCSubmission | null | undefined>(undefined);
@@ -101,8 +110,16 @@ export default function DiscoverClient({ session }: Props) {
   const [hostedSquadId, setHostedSquadId] = useState<string | null>(null);
   const [successQrUrl, setSuccessQrUrl] = useState("");
   const [copiedEventLink, setCopiedEventLink] = useState(false);
-  const [showVideoCall, setShowVideoCall] = useState(false);
-  const [videoCallSquadId, setVideoCallSquadId] = useState<string | null>(null);
+
+  const [webRTCCall, setWebRTCCall] = useState<{ theirUid: string; theirName: string; mode: "caller" | "callee"; callId?: string; offer?: RTCSessionDescriptionInit } | null>(null);
+  const [incomingCall, setIncomingCall] = useState<WebRTCCall | null>(null);
+  const [photoDrops, setPhotoDrops] = useState<PhotoDrop[]>([]);
+  const [showPhotoDropModal, setShowPhotoDropModal] = useState(false);
+  const [photoDropCaption, setPhotoDropCaption] = useState("");
+  const [photoDropFile, setPhotoDropFile] = useState<File | null>(null);
+  const [photoDropUploading, setPhotoDropUploading] = useState(false);
+  const photoDropMapMarkersRef = useRef<Map<string, google.maps.marker.AdvancedMarkerElement>>(new Map());
+  const photoDropFileRef = useRef<HTMLInputElement>(null);
 
   const AdvancedMarkerElementRef = useRef<typeof google.maps.marker.AdvancedMarkerElement | null>(null);
   const hostMapDivRef = useRef<HTMLDivElement>(null);
@@ -165,7 +182,11 @@ export default function DiscoverClient({ session }: Props) {
     if (!firebaseReady) return;
     const userDocRef = doc(db, "users", uid);
     const unsub = onSnapshot(userDocRef, (snap) => {
-      setUserProfile(snap.exists() ? (snap.data() as UserProfile) : null);
+      const profile = snap.exists() ? (snap.data() as UserProfile) : null;
+      setUserProfile(profile);
+      if (profile?.kycStatus === "approved") {
+        awardBadge(uid, "verified").catch(() => {});
+      }
     }, () => {});
     return unsub;
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -276,12 +297,56 @@ export default function DiscoverClient({ session }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid, firebaseReady]);
 
+  // ── Subscribe to photo drops ───────────────────────────────────────────────
+  useEffect(() => {
+    if (!firebaseReady) return;
+    return subscribeToPhotoDrops(setPhotoDrops);
+  }, [firebaseReady]);
+
+  // ── Listen for incoming WebRTC calls ───────────────────────────────────────
+  useEffect(() => {
+    if (!firebaseReady) return;
+    return subscribeToIncomingCall(uid, (call) => {
+      if (call && !webRTCCall) setIncomingCall(call);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid, firebaseReady]);
+
   // ── Update user location markers whenever users list changes ──────────────
   useEffect(() => {
     if (!googleMapRef.current) return;
     updateUserLocationMarkers(allUsers, googleMapRef.current);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allUsers]);
+
+  // ── Photo drop markers ─────────────────────────────────────────────────────
+  useEffect(() => {
+    const map = googleMapRef.current;
+    const AME = AdvancedMarkerElementRef.current;
+    if (!map || !AME) return;
+
+    const currentIds = new Set(photoDrops.map((d) => d.id));
+    photoDropMapMarkersRef.current.forEach((marker, id) => {
+      if (!currentIds.has(id)) { marker.map = null; photoDropMapMarkersRef.current.delete(id); }
+    });
+
+    photoDrops.forEach((drop) => {
+      if (photoDropMapMarkersRef.current.has(drop.id)) return;
+      const el = document.createElement("div");
+      el.style.cssText = "width:44px;height:44px;border-radius:50%;overflow:hidden;border:3px solid #ffe24c;box-shadow:0 2px 8px rgba(0,0,0,0.4);cursor:pointer;";
+      const img = document.createElement("img");
+      img.src = drop.imageURL;
+      img.style.cssText = "width:100%;height:100%;object-fit:cover;";
+      el.appendChild(img);
+      const marker = new AME({ map, position: drop.location, content: el, zIndex: 5 });
+      marker.addListener("click", () => {
+        setSelectedSquad(null);
+        // Could show drop detail — for now do nothing extra
+      });
+      photoDropMapMarkersRef.current.set(drop.id, marker);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photoDrops, mapsReady]);
 
   // ── Filter nearby squads and update map markers ────────────────────────────
   useEffect(() => {
@@ -426,17 +491,45 @@ export default function DiscoverClient({ session }: Props) {
     setJoining(squad.id);
     try {
       await joinSquad(squad.id, uid);
-      // Issue ticket on successful join
       await issueTicket(squad.id, squad.name, {
         uid,
         name: user.name ?? "Anonymous",
         photoURL: user.image ?? "",
       }).catch(() => {});
+      awardBadge(uid, "pioneer").catch(() => {});
     } catch (e) {
       console.error(e);
     } finally {
       setJoining(null);
       setSelectedSquad(null);
+    }
+  }
+
+  async function handlePhotoDrop() {
+    if (!photoDropFile || !userLocation) return;
+    setPhotoDropUploading(true);
+    try {
+      const path = `photoDrops/${uid}/${Date.now()}_${photoDropFile.name}`;
+      const sRef = storageRef(storage, path);
+      await uploadBytes(sRef, photoDropFile);
+      const imageURL = await getDownloadURL(sRef);
+      await addPhotoDrop({
+        uid,
+        displayName: user.name ?? "Anonymous",
+        photoURL: user.image ?? "",
+        imageURL,
+        storagePath: path,
+        location: userLocation,
+        caption: photoDropCaption.trim().slice(0, 150),
+      });
+      awardBadge(uid, "explorer").catch(() => {});
+      setShowPhotoDropModal(false);
+      setPhotoDropCaption("");
+      setPhotoDropFile(null);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setPhotoDropUploading(false);
     }
   }
 
@@ -466,6 +559,7 @@ export default function DiscoverClient({ session }: Props) {
         active: true,
       });
       setHostedSquadId(squadId);
+      awardBadge(uid, "host").catch(() => {});
       const url = `${BASE_URL}/event/${squadId}`;
       const qrUrl = await QRCode.toDataURL(url, { width: 200, margin: 1 });
       setSuccessQrUrl(qrUrl);
@@ -552,12 +646,12 @@ export default function DiscoverClient({ session }: Props) {
             )}
           </div>
 
-          {/* Signals (wifi tethering) */}
+          {/* Friends shortcut */}
           <button
-            onClick={() => { setActiveNav("signals"); closeAllPanels(); }}
-            style={{ display: "flex", alignItems: "center", justifyContent: "center", color: activeNav === "signals" ? "#791651" : "#9f376f", padding: 8, background: activeNav === "signals" ? "#ffd8e7" : "none", border: "none", cursor: "pointer", borderRadius: 6 }}
+            onClick={() => { setActiveNav("friends"); closeAllPanels(); }}
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", color: activeNav === "friends" ? "#791651" : "#9f376f", padding: 8, background: activeNav === "friends" ? "#ffd8e7" : "none", border: "none", cursor: "pointer", borderRadius: 6 }}
           >
-            <span className="material-symbols-outlined" style={{ fontSize: 24 }}>wifi_tethering</span>
+            <span className="material-symbols-outlined" style={{ fontSize: 24, fontVariationSettings: activeNav === "friends" ? "'FILL' 1" : "'FILL' 0" }}>diversity_3</span>
           </button>
 
           {/* Settings / user pill */}
@@ -671,7 +765,7 @@ export default function DiscoverClient({ session }: Props) {
             { icon: mySquad ? "chat" : "groups", label: mySquad ? "SQUAD CHAT" : "Squads", key: "squads" },
             { icon: "fingerprint", label: "VERIFY ID", key: "kyc" },
             { icon: "person_search", label: "Recruits", key: "recruits" },
-            { icon: "sensors", label: "Signals", key: "signals" },
+            { icon: "diversity_3", label: "Friends", key: "friends" },
             { icon: "article", label: "Intel", key: "intel" },
           ].map((item) => {
             const isActive = activeNav === item.key;
@@ -711,6 +805,7 @@ export default function DiscoverClient({ session }: Props) {
                 disabled={isLocked}
                 onClick={() => {
                   if (isLocked) return;
+                  closeAllPanels();
                   setActiveNav(item.key as typeof activeNav);
                 }}
                 style={{
@@ -827,7 +922,10 @@ export default function DiscoverClient({ session }: Props) {
               uid={uid}
               displayName={user.name ?? "Anonymous"}
               photoURL={user.image ?? ""}
-              onVideoCall={(squadId) => { setVideoCallSquadId(squadId); setShowVideoCall(true); }}
+              onVideoCall={(_squadId) => {
+                if (!mySquad) return;
+                setWebRTCCall({ theirUid: "", theirName: "SQUAD", mode: "caller" });
+              }}
             />
           </div>
         )}
@@ -857,6 +955,19 @@ export default function DiscoverClient({ session }: Props) {
           </div>
         )}
 
+        {/* Friends Directory — shown when friends tab is active */}
+        {activeNav === "friends" && (
+          <div className="discover-overlay-panel">
+            <FriendsDirectory
+              uid={uid}
+              displayName={user.name ?? ""}
+              photoURL={user.image ?? ""}
+              allUsers={allUsers}
+              onCall={(theirUid, theirName) => setWebRTCCall({ theirUid, theirName, mode: "caller" })}
+            />
+          </div>
+        )}
+
         {/* Google Map — kept mounted for Google Maps lifecycle, hidden when overlay panels are active */}
         <div
           ref={mapDivRef}
@@ -867,6 +978,7 @@ export default function DiscoverClient({ session }: Props) {
               activeNav === "recruits" ||
               activeNav === "kyc" ||
               activeNav === "intel" ||
+              activeNav === "friends" ||
               (activeNav === "squads" && !!mySquad && kycApproved)
                 ? "hidden"
                 : "visible",
@@ -874,6 +986,7 @@ export default function DiscoverClient({ session }: Props) {
               activeNav === "recruits" ||
               activeNav === "kyc" ||
               activeNav === "intel" ||
+              activeNav === "friends" ||
               (activeNav === "squads" && !!mySquad && kycApproved)
                 ? "none"
                 : "auto",
@@ -881,7 +994,7 @@ export default function DiscoverClient({ session }: Props) {
         />
 
         {/* Loading overlay */}
-        {!mapsReady && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
+        {!mapsReady && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
           <div
             style={{
               position: "absolute", inset: 0,
@@ -914,7 +1027,7 @@ export default function DiscoverClient({ session }: Props) {
         )}
 
         {/* Location denied notice */}
-        {locationDenied && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
+        {locationDenied && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
           <div
             style={{
               position: "absolute", top: 16, left: "50%",
@@ -933,8 +1046,25 @@ export default function DiscoverClient({ session }: Props) {
           </div>
         )}
 
+        {/* ── PHOTO DROP FAB ───────────────────────────────────────────── */}
+        {activeNav === "squads" && !mySquad && kycApproved && userLocation && (
+          <button
+            onClick={() => setShowPhotoDropModal(true)}
+            style={{
+              position: "absolute", left: 24, bottom: 80, zIndex: 20,
+              width: 52, height: 52, borderRadius: "50%",
+              backgroundColor: "#ffe24c", border: "3px solid #1b1b1e",
+              boxShadow: "4px 4px 0 #1b1b1e", cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}
+            title="Drop a photo on the map"
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: 24, color: "#1b1b1e", fontVariationSettings: "'FILL' 1" }}>add_a_photo</span>
+          </button>
+        )}
+
         {/* ── RIGHT OVERLAY PANELS ──────────────────────────────────────── */}
-        {activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
+        {activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
         <div
           style={{
             position: "absolute", right: 24, top: 24,
@@ -1176,7 +1306,7 @@ export default function DiscoverClient({ session }: Props) {
             </div>
             {selectedSquad.memberUids?.includes(uid) && (
               <button
-                onClick={() => { setVideoCallSquadId(selectedSquad.id); setShowVideoCall(true); setSelectedSquad(null); }}
+                onClick={() => { setWebRTCCall({ theirUid: "", theirName: "SQUAD", mode: "caller" }); setSelectedSquad(null); }}
                 style={{
                   width: "100%", border: "3px solid #1b1b1e", padding: "12px",
                   fontWeight: 700, fontSize: 13, textTransform: "uppercase",
@@ -1193,35 +1323,127 @@ export default function DiscoverClient({ session }: Props) {
         </div>
       )}
 
-      {/* ── VIDEO CALL OVERLAY ───────────────────────────────────────────── */}
-      {showVideoCall && videoCallSquadId && (
-        <div
-          style={{
-            position: "fixed", inset: 0, zIndex: 200,
-            backgroundColor: "#0a0a0d", display: "flex", flexDirection: "column",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 20px", backgroundColor: "#1b1b1e", borderBottom: "3px solid #9f376f" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span className="material-symbols-outlined" style={{ fontSize: 20, color: "#ff85c1", fontVariationSettings: "'FILL' 1" }}>videocam</span>
-              <span style={{ fontFamily: "var(--font-bricolage),'Bricolage Grotesque',sans-serif", fontWeight: 800, fontSize: 14, textTransform: "uppercase", color: "#fbf8fc" }}>
-                SQUAD VIDEO CALL
-              </span>
-              <span style={{ fontSize: 10, fontWeight: 700, color: "#7ed4fd", textTransform: "uppercase", border: "1.5px solid #7ed4fd", padding: "2px 8px" }}>LIVE</span>
-            </div>
-            <button
-              onClick={() => setShowVideoCall(false)}
-              style={{ background: "#ba1a1a", color: "white", border: "2px solid #fbf8fc", padding: "6px 14px", fontWeight: 700, fontSize: 11, textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 6 }}
-            >
-              <span className="material-symbols-outlined" style={{ fontSize: 14 }}>call_end</span>
-              LEAVE
-            </button>
+      {/* ── WEBRTC VIDEO CALL ────────────────────────────────────────────── */}
+      {webRTCCall && (
+        <WebRTCCallComponent
+          mode={webRTCCall.mode}
+          callId={webRTCCall.callId}
+          myUid={uid}
+          myName={user.name ?? "AGENT"}
+          theirName={webRTCCall.theirName}
+          offer={webRTCCall.offer}
+          onCallId={(id: string) => setWebRTCCall((v) => v ? { ...v, callId: id } : v)}
+          onEnd={() => setWebRTCCall(null)}
+        />
+      )}
+
+      {/* ── INCOMING CALL BANNER ─────────────────────────────────────────── */}
+      {incomingCall && !webRTCCall && (
+        <div style={{
+          position: "fixed", top: 80, left: "50%", transform: "translateX(-50%)",
+          zIndex: 300, backgroundColor: "#fbf8fc", border: "3px solid #1b1b1e",
+          boxShadow: "6px 6px 0 #1b1b1e", padding: "16px 24px",
+          display: "flex", alignItems: "center", gap: 16, minWidth: 280,
+        }}>
+          <span className="material-symbols-outlined" style={{ fontSize: 32, color: "#4caf50", fontVariationSettings: "'FILL' 1", animation: "pulse 1s infinite" }}>phone_in_talk</span>
+          <div style={{ flex: 1 }}>
+            <p style={{ fontFamily: "var(--font-bricolage,'Bricolage Grotesque',sans-serif)", fontWeight: 900, fontSize: 14, textTransform: "uppercase" }}>INCOMING CALL</p>
+            <p style={{ fontSize: 12, color: "#544249", fontWeight: 600 }}>{incomingCall.callerName}</p>
           </div>
-          <iframe
-            allow="camera; microphone; fullscreen; display-capture; autoplay"
-            src={`https://meet.jit.si/itstatic-${videoCallSquadId}#userInfo.displayName=${encodeURIComponent(user.name ?? "AGENT")}&userInfo.avatarUrl=${encodeURIComponent(user.image ?? "")}&config.prejoinPageEnabled=false`}
-            style={{ flex: 1, border: "none", width: "100%" }}
-          />
+          <button
+            onClick={() => {
+              setWebRTCCall({ theirUid: incomingCall.callerUid, theirName: incomingCall.callerName, mode: "callee", callId: incomingCall.id, offer: incomingCall.offer });
+              setIncomingCall(null);
+            }}
+            style={{ padding: "8px 14px", backgroundColor: "#4caf50", border: "2px solid #1b1b1e", color: "#fff", fontWeight: 800, fontSize: 11, textTransform: "uppercase", cursor: "pointer" }}
+          >
+            ANSWER
+          </button>
+          <button
+            onClick={() => setIncomingCall(null)}
+            style={{ padding: "8px 14px", backgroundColor: "#ba1a1a", border: "2px solid #1b1b1e", color: "#fff", fontWeight: 800, fontSize: 11, textTransform: "uppercase", cursor: "pointer" }}
+          >
+            DECLINE
+          </button>
+        </div>
+      )}
+
+      {/* ── PHOTO DROP MODAL ─────────────────────────────────────────────── */}
+      {showPhotoDropModal && (
+        <div
+          style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.65)", zIndex: 110, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={() => { if (!photoDropUploading) setShowPhotoDropModal(false); }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ backgroundColor: "#fbf8fc", border: "4px solid #1b1b1e", boxShadow: "10px 10px 0 #1b1b1e", padding: 28, width: "100%", maxWidth: 420 }}
+          >
+            <p style={{ fontFamily: "var(--font-bricolage,'Bricolage Grotesque',sans-serif)", fontWeight: 900, fontSize: 18, textTransform: "uppercase", marginBottom: 4 }}>DROP A PHOTO</p>
+            <p style={{ fontSize: 11, color: "#544249", fontWeight: 600, marginBottom: 20 }}>Tag a photo at your location · visible for 24h</p>
+
+            <input
+              type="file"
+              accept="image/*"
+              ref={photoDropFileRef}
+              style={{ display: "none" }}
+              onChange={(e) => setPhotoDropFile(e.target.files?.[0] ?? null)}
+            />
+            <button
+              onClick={() => photoDropFileRef.current?.click()}
+              style={{
+                width: "100%", padding: "14px", border: "3px dashed #1b1b1e", backgroundColor: photoDropFile ? "#c8f7c5" : "#f6f2f7",
+                cursor: "pointer", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                fontWeight: 700, fontSize: 12, textTransform: "uppercase", fontFamily: "inherit",
+              }}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: 20, fontVariationSettings: "'FILL' 1" }}>add_a_photo</span>
+              {photoDropFile ? photoDropFile.name : "CHOOSE PHOTO"}
+            </button>
+
+            {photoDropFile && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={URL.createObjectURL(photoDropFile)}
+                alt="preview"
+                style={{ width: "100%", height: 160, objectFit: "cover", border: "2px solid #1b1b1e", marginBottom: 14 }}
+              />
+            )}
+
+            <input
+              type="text"
+              placeholder="Add a caption… (optional)"
+              value={photoDropCaption}
+              onChange={(e) => setPhotoDropCaption(e.target.value)}
+              maxLength={150}
+              style={{
+                width: "100%", padding: "10px 14px", border: "2px solid #1b1b1e",
+                fontSize: 13, fontFamily: "inherit", fontWeight: 600,
+                backgroundColor: "#fbf8fc", outline: "none", marginBottom: 20, boxSizing: "border-box",
+              }}
+            />
+
+            <div style={{ display: "flex", gap: 10 }}>
+              <button
+                onClick={() => setShowPhotoDropModal(false)}
+                disabled={photoDropUploading}
+                style={{ flex: 1, padding: "12px", border: "2px solid #1b1b1e", backgroundColor: "#fbf8fc", fontWeight: 700, fontSize: 12, textTransform: "uppercase", cursor: "pointer", fontFamily: "inherit" }}
+              >
+                CANCEL
+              </button>
+              <button
+                onClick={handlePhotoDrop}
+                disabled={!photoDropFile || photoDropUploading}
+                style={{
+                  flex: 2, padding: "12px", border: "3px solid #1b1b1e",
+                  backgroundColor: !photoDropFile || photoDropUploading ? "#e4e1e6" : "#ffe24c",
+                  fontWeight: 800, fontSize: 13, textTransform: "uppercase", cursor: !photoDropFile || photoDropUploading ? "not-allowed" : "pointer",
+                  fontFamily: "inherit", boxShadow: !photoDropFile || photoDropUploading ? "none" : "4px 4px 0 #1b1b1e",
+                }}
+              >
+                {photoDropUploading ? "UPLOADING…" : "DROP IT"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1430,6 +1652,7 @@ export default function DiscoverClient({ session }: Props) {
         {([
           { icon: mySquad ? "chat" : "map", label: mySquad ? "CHAT" : "MAP", key: "squads" },
           { icon: "person_search", label: "RECRUITS", key: "recruits" },
+          { icon: "diversity_3", label: "FRIENDS", key: "friends" },
           { icon: "fingerprint", label: "VERIFY", key: "kyc" },
           { icon: "article", label: "INTEL", key: "intel" },
         ] as const).map((item) => {
@@ -1440,6 +1663,7 @@ export default function DiscoverClient({ session }: Props) {
               key={item.key}
               onClick={() => {
                 if (isLocked) return;
+                closeAllPanels();
                 setActiveNav(item.key);
               }}
               style={{

@@ -56,6 +56,7 @@ export interface UserProfile {
   kycStatus?: "pending" | "approved" | "rejected" | "expired";
   kycVerifiedAt?: Timestamp;
   kycExpiresAt?: Timestamp;
+  badges?: string[];
 }
 
 export interface FriendRequest {
@@ -697,4 +698,250 @@ export async function checkInTicket(ticketId: string): Promise<void> {
     checkedIn: true,
     checkedInAt: Timestamp.now(),
   });
+}
+
+// ── Direct Messages ────────────────────────────────────────────────────────────
+
+export interface DMChat {
+  id: string;
+  memberUids: string[];
+  memberNames: Record<string, string>;
+  memberPhotos: Record<string, string>;
+  lastMessage: string;
+  lastMessageAt: Timestamp;
+  createdAt: Timestamp;
+}
+
+export async function getOrCreateDMChat(
+  myUid: string,
+  theirUid: string,
+  names: Record<string, string>,
+  photos: Record<string, string>
+): Promise<string> {
+  const q = query(
+    collection(db, "directMessages"),
+    where("memberUids", "array-contains", myUid)
+  );
+  const snap = await getDocs(q);
+  const existing = snap.docs.find((d) => {
+    const uids: string[] = d.data().memberUids ?? [];
+    return uids.includes(theirUid);
+  });
+  if (existing) return existing.id;
+
+  const ref = await addDoc(collection(db, "directMessages"), {
+    memberUids: [myUid, theirUid],
+    memberNames: names,
+    memberPhotos: photos,
+    lastMessage: "",
+    lastMessageAt: Timestamp.now(),
+    createdAt: Timestamp.now(),
+  });
+  return ref.id;
+}
+
+export function subscribeToMyDMChats(
+  uid: string,
+  callback: (chats: DMChat[]) => void
+): () => void {
+  const q = query(
+    collection(db, "directMessages"),
+    where("memberUids", "array-contains", uid)
+  );
+  return onSnapshot(q, (snap) => {
+    const chats = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() } as DMChat))
+      .sort((a, b) => (b.lastMessageAt?.toMillis() ?? 0) - (a.lastMessageAt?.toMillis() ?? 0));
+    callback(chats);
+  }, () => {});
+}
+
+export function subscribeToDMMessages(
+  chatId: string,
+  callback: (msgs: ChatMessage[]) => void
+): () => void {
+  const q = query(
+    collection(db, "directMessages", chatId, "messages"),
+    orderBy("sentAt", "asc"),
+    limit(80)
+  );
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ChatMessage)));
+  }, () => {});
+}
+
+export async function sendDMMessage(
+  chatId: string,
+  sender: { uid: string; name: string; photoURL: string },
+  rawText: string
+): Promise<void> {
+  const text = sanitizeText(rawText);
+  if (!text) return;
+  await addDoc(collection(db, "directMessages", chatId, "messages"), {
+    senderUid: sender.uid,
+    senderName: sender.name,
+    senderPhotoURL: sender.photoURL,
+    text,
+    sentAt: Timestamp.now(),
+    type: "text",
+  });
+  await updateDoc(doc(db, "directMessages", chatId), {
+    lastMessage: text.length > 60 ? text.slice(0, 60) + "…" : text,
+    lastMessageAt: Timestamp.now(),
+  });
+}
+
+// ── Photo Drops ────────────────────────────────────────────────────────────────
+
+export interface PhotoDrop {
+  id: string;
+  uid: string;
+  displayName: string;
+  photoURL: string;
+  imageURL: string;
+  storagePath: string;
+  location: { lat: number; lng: number };
+  caption: string;
+  createdAt: Timestamp;
+  expiresAt: Timestamp;
+}
+
+export async function addPhotoDrop(data: {
+  uid: string;
+  displayName: string;
+  photoURL: string;
+  imageURL: string;
+  storagePath: string;
+  location: { lat: number; lng: number };
+  caption: string;
+}): Promise<string> {
+  const expiresAt = Timestamp.fromDate(new Date(Date.now() + 24 * 60 * 60 * 1000));
+  const ref = await addDoc(collection(db, "photoDrops"), {
+    ...data,
+    createdAt: Timestamp.now(),
+    expiresAt,
+  });
+  return ref.id;
+}
+
+export function subscribeToPhotoDrops(
+  callback: (drops: PhotoDrop[]) => void
+): () => void {
+  const q = query(
+    collection(db, "photoDrops"),
+    where("expiresAt", ">", Timestamp.now()),
+    orderBy("expiresAt", "desc")
+  );
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as PhotoDrop)));
+  }, () => {});
+}
+
+// ── WebRTC Signaling ───────────────────────────────────────────────────────────
+
+export interface WebRTCCall {
+  id: string;
+  callerUid: string;
+  calleeUid: string;
+  callerName: string;
+  calleeName: string;
+  offer?: RTCSessionDescriptionInit;
+  answer?: RTCSessionDescriptionInit;
+  createdAt: Timestamp;
+  active: boolean;
+}
+
+export async function createWebRTCCall(data: {
+  callerUid: string;
+  calleeUid: string;
+  callerName: string;
+  calleeName: string;
+  offer: RTCSessionDescriptionInit;
+}): Promise<string> {
+  const ref = await addDoc(collection(db, "webrtcCalls"), {
+    ...data,
+    createdAt: Timestamp.now(),
+    active: true,
+  });
+  return ref.id;
+}
+
+export async function answerWebRTCCall(
+  callId: string,
+  answer: RTCSessionDescriptionInit
+): Promise<void> {
+  await updateDoc(doc(db, "webrtcCalls", callId), { answer });
+}
+
+export async function addWebRTCIceCandidate(
+  callId: string,
+  role: "caller" | "callee",
+  candidate: RTCIceCandidateInit
+): Promise<void> {
+  await addDoc(
+    collection(db, "webrtcCalls", callId, role === "caller" ? "callerCandidates" : "calleeCandidates"),
+    candidate
+  );
+}
+
+export function subscribeToWebRTCCall(
+  callId: string,
+  callback: (call: WebRTCCall | null) => void
+): () => void {
+  return onSnapshot(doc(db, "webrtcCalls", callId), (snap) => {
+    callback(snap.exists() ? ({ id: snap.id, ...snap.data() } as WebRTCCall) : null);
+  }, () => callback(null));
+}
+
+export function subscribeToWebRTCIceCandidates(
+  callId: string,
+  role: "caller" | "callee",
+  callback: (candidates: RTCIceCandidateInit[]) => void
+): () => void {
+  return onSnapshot(
+    collection(db, "webrtcCalls", callId, role === "caller" ? "callerCandidates" : "calleeCandidates"),
+    (snap) => {
+      callback(snap.docs.map((d) => d.data() as RTCIceCandidateInit));
+    },
+    () => {}
+  );
+}
+
+export async function endWebRTCCall(callId: string): Promise<void> {
+  await updateDoc(doc(db, "webrtcCalls", callId), { active: false });
+}
+
+export function subscribeToIncomingCall(
+  calleeUid: string,
+  callback: (call: WebRTCCall | null) => void
+): () => void {
+  const q = query(
+    collection(db, "webrtcCalls"),
+    where("calleeUid", "==", calleeUid),
+    where("active", "==", true)
+  );
+  return onSnapshot(q, (snap) => {
+    if (snap.empty) { callback(null); return; }
+    callback({ id: snap.docs[0].id, ...snap.docs[0].data() } as WebRTCCall);
+  }, () => callback(null));
+}
+
+// ── Badges ─────────────────────────────────────────────────────────────────────
+
+export const BADGE_DEFS: Record<string, { label: string; icon: string; color: string }> = {
+  pioneer:   { label: "PIONEER",    icon: "rocket_launch",  color: "#ffe24c" },
+  host:      { label: "HOST",       icon: "radio_button_checked", color: "#ff85c1" },
+  networker: { label: "NETWORKER",  icon: "hub",            color: "#7ed4fd" },
+  explorer:  { label: "EXPLORER",   icon: "photo_camera",   color: "#c8f7c5" },
+  connected: { label: "CONNECTED",  icon: "diversity_3",    color: "#ffd8e7" },
+  verified:  { label: "VERIFIED",   icon: "verified_user",  color: "#c8f7c5" },
+};
+
+export async function awardBadge(uid: string, badge: string): Promise<void> {
+  const userRef = doc(db, "users", uid);
+  const snap = await getDoc(userRef);
+  if (!snap.exists()) return;
+  const current: string[] = snap.data().badges ?? [];
+  if (current.includes(badge)) return;
+  await updateDoc(userRef, { badges: [...current, badge] });
 }

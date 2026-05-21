@@ -7,6 +7,7 @@ import {
   sendFriendRequest,
   acceptFriendRequest,
   rejectFriendRequest,
+  awardBadge,
   type UserProfile,
   type FriendRequest,
 } from "@/lib/firestore";
@@ -174,6 +175,9 @@ export default function RecruitDirectory({ uid }: Props) {
     setAccepting(requestId);
     try {
       await acceptFriendRequest(requestId);
+      const newCount = connections.length + 1;
+      if (newCount >= 5) awardBadge(uid, "networker").catch(() => {});
+      if (newCount >= 1) awardBadge(uid, "connected").catch(() => {});
     } catch (e) {
       console.error(e);
     } finally {

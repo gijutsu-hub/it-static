@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   subscribeToSquadMessages,
   sendSquadMessage,
@@ -32,12 +32,34 @@ function formatTime(ts: ChatMessage["sentAt"]): string {
   });
 }
 
+function renderMentions(text: string, myDisplayName: string): React.ReactNode {
+  const parts = text.split(/(@\S+)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith("@")) {
+      const isMe = part.toLowerCase() === `@${myDisplayName.toLowerCase()}` ||
+        part.toLowerCase() === `@${myDisplayName.toLowerCase().replace(/ /g, "_")}`;
+      return (
+        <span key={i} style={{
+          backgroundColor: isMe ? "#ffe24c" : "#ffd8e7",
+          color: isMe ? "#1b1b1e" : "#9f376f",
+          fontWeight: 800,
+          borderRadius: 3,
+          padding: "0 3px",
+        }}>{part}</span>
+      );
+    }
+    return part;
+  });
+}
+
 function MessageBubble({
   msg,
   isOwn,
+  myDisplayName,
 }: {
   msg: ChatMessage;
   isOwn: boolean;
+  myDisplayName: string;
 }) {
   return (
     <div
@@ -116,7 +138,7 @@ function MessageBubble({
             boxShadow: isOwn ? "3px 3px 0 #3d0025" : "3px 3px 0 #b0b0b0",
           }}
         >
-          {msg.text}
+          {renderMentions(msg.text, myDisplayName)}
         </div>
         <span
           style={{
@@ -217,11 +239,13 @@ export default function SquadChat({ squad, uid, displayName, photoURL, onVideoCa
   const [privateChats, setPrivateChats] = useState<PrivateChat[]>([]);
   const [activePrivateChatId, setActivePrivateChatId] = useState<string | null>(null);
   const [input, setInput] = useState("");
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [showCreatePrivate, setShowCreatePrivate] = useState(false);
   const [sending, setSending] = useState(false);
   const [showMobileMembers, setShowMobileMembers] = useState(false);
   const lastSentRef = useRef(0);
   const endRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   // Presence: go online on mount, go offline on unmount/unload
   useEffect(() => {
@@ -264,6 +288,20 @@ export default function SquadChat({ squad, uid, displayName, photoURL, onVideoCa
   const onlinePresence = presence.filter((p) => p.online);
   const offlinePresence = presence.filter((p) => !p.online);
   const otherOnlineMembers = presence.filter((p) => p.uid !== uid && p.online);
+
+  const presenceMentionSuggestions = mentionQuery === null ? [] : presence.filter((p) =>
+    p.uid !== uid && p.displayName.toLowerCase().startsWith(mentionQuery.toLowerCase())
+  ).slice(0, 5);
+
+  function insertMention(name: string) {
+    const cursor = inputRef.current?.selectionStart ?? input.length;
+    const before = input.slice(0, cursor);
+    const after = input.slice(cursor);
+    const replaced = before.replace(/@(\w*)$/, `@${name.replace(/ /g, "_")} `);
+    setInput(replaced + after);
+    setMentionQuery(null);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  }
 
   // Private chats the user hasn't opened yet (notification badges)
   const pendingPrivateChats = privateChats.filter(
@@ -679,6 +717,7 @@ export default function SquadChat({ squad, uid, displayName, photoURL, onVideoCa
               key={msg.id}
               msg={msg}
               isOwn={msg.senderUid === uid}
+              myDisplayName={displayName}
             />
           ))}
           <div ref={endRef} />
@@ -694,18 +733,64 @@ export default function SquadChat({ squad, uid, displayName, photoURL, onVideoCa
             gap: 8,
             alignItems: "center",
             flexShrink: 0,
+            position: "relative",
           }}
         >
+          {/* @mention dropdown */}
+          {mentionQuery !== null && (
+            <div style={{
+              position: "absolute", bottom: "calc(100% + 4px)", left: 12, right: 56,
+              backgroundColor: "#fbf8fc", border: "2px solid #1b1b1e", boxShadow: "4px 4px 0 #1b1b1e",
+              zIndex: 50, maxHeight: 160, overflowY: "auto",
+            }}>
+              {presenceMentionSuggestions.length === 0 && (
+                <p style={{ padding: "8px 12px", fontSize: 11, color: "#544249", fontWeight: 600 }}>No members found</p>
+              )}
+              {presenceMentionSuggestions.map((entry) => (
+                <button
+                  key={entry.uid}
+                  onMouseDown={(e) => { e.preventDefault(); insertMention(entry.displayName); }}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 8, width: "100%",
+                    padding: "6px 12px", border: "none", background: "none",
+                    cursor: "pointer", textAlign: "left",
+                  }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = "#ffd8e7"; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = "transparent"; }}
+                >
+                  {entry.photoURL && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={entry.photoURL} alt="" style={{ width: 20, height: 20, borderRadius: "50%", border: "1.5px solid #1b1b1e", objectFit: "cover" }} />
+                  )}
+                  <span style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase" }}>{entry.displayName}</span>
+                  {entry.online && <span style={{ width: 6, height: 6, borderRadius: "50%", backgroundColor: "#4caf50", marginLeft: "auto", flexShrink: 0 }} />}
+                </button>
+              ))}
+            </div>
+          )}
           <input
+            ref={inputRef}
             value={input}
-            onChange={(e) => setInput(e.target.value.slice(0, 500))}
+            onChange={(e) => {
+              const val = e.target.value.slice(0, 500);
+              setInput(val);
+              const cursor = e.target.selectionStart ?? val.length;
+              const before = val.slice(0, cursor);
+              const match = before.match(/@(\w*)$/);
+              setMentionQuery(match ? match[1] : null);
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                handleSend();
+                if (mentionQuery !== null && presenceMentionSuggestions.length > 0) {
+                  insertMention(presenceMentionSuggestions[0].displayName);
+                } else {
+                  handleSend();
+                }
               }
+              if (e.key === "Escape") setMentionQuery(null);
             }}
-            placeholder="Message squad... (500 char max)"
+            placeholder="Message squad… use @name to mention"
             style={{
               flex: 1,
               border: "3px solid #1b1b1e",
