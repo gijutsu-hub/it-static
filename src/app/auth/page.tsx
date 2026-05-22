@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
+import { redirect } from "next/navigation";
+import { auth } from "@/auth";
 import AuthClient from "./AuthClient";
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || "https://itstatic.app";
@@ -17,7 +19,10 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
-export default function AuthPage() {
+export default async function AuthPage() {
+  const session = await auth();
+  if (session?.user) redirect("/discover");
+
   return (
     <Suspense>
       <AuthClient />

@@ -19,6 +19,7 @@ import {
   deleteField,
   limit,
   increment,
+  runTransaction,
 } from "firebase/firestore";
 import { ref, deleteObject } from "firebase/storage";
 import { firebaseApp, storage } from "./firebase";
@@ -60,6 +61,15 @@ export interface UserProfile {
   badges?: string[];
   points?: number;
   ownedItems?: string[];
+  // Subscription
+  subscriptionId?: string;
+  subscriptionStatus?: "pending" | "trial" | "active" | "past_due" | "cancelled";
+  trialStartedAt?: Timestamp;
+  trialEndsAt?: Timestamp;
+  subscriptionActivatedAt?: Timestamp;
+  lastChargedAt?: Timestamp;
+  // Admin controls
+  adminSuspended?: boolean;
 }
 
 export interface FriendRequest {
@@ -814,6 +824,9 @@ export interface PhotoDrop {
   caption: string;
   createdAt: Timestamp;
   expiresAt: Timestamp;
+  claimedBy?: string;
+  claimerName?: string;
+  claimedAt?: Timestamp;
 }
 
 export async function addPhotoDrop(data: {
@@ -845,6 +858,60 @@ export function subscribeToPhotoDrops(
   return onSnapshot(q, (snap) => {
     callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as PhotoDrop)));
   }, () => {});
+}
+
+/** Atomically claim an unclaimed photo drop. Returns true if claim succeeded. */
+export async function claimPhotoDrop(
+  dropId: string,
+  claimerUid: string,
+  claimerName: string
+): Promise<boolean> {
+  const dropRef = doc(db, "photoDrops", dropId);
+  try {
+    let claimed = false;
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(dropRef);
+      if (!snap.exists()) return;
+      if (snap.data().claimedBy) return;
+      tx.update(dropRef, {
+        claimedBy: claimerUid,
+        claimerName,
+        claimedAt: Timestamp.now(),
+      });
+      claimed = true;
+    });
+    if (claimed) {
+      await addPoints(claimerUid, 50);
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/** Update subscription status for a user (called from webhook handler). */
+export async function updateSubscription(
+  email: string,
+  fields: Partial<Pick<UserProfile, "subscriptionId" | "subscriptionStatus" | "trialStartedAt" | "trialEndsAt" | "subscriptionActivatedAt" | "lastChargedAt">>
+): Promise<void> {
+  await updateDoc(doc(db, "users", email), fields as Record<string, unknown>);
+}
+
+/** Admin: hard-suspend a user — blocks platform access regardless of subscription state. */
+export async function adminSuspendUser(email: string): Promise<void> {
+  await updateDoc(doc(db, "users", email), {
+    adminSuspended: true,
+    subscriptionStatus: "cancelled",
+  });
+}
+
+/** Admin: restore a user that was suspended — grants active subscription access. */
+export async function adminRestoreUser(email: string): Promise<void> {
+  await updateDoc(doc(db, "users", email), {
+    adminSuspended: false,
+    subscriptionStatus: "active",
+  });
 }
 
 // ── WebRTC Signaling ───────────────────────────────────────────────────────────

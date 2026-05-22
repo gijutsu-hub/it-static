@@ -12,7 +12,7 @@ const pwaConfig = withPWA({
 // Explicit CSP so Google images / Maps / Firebase all load
 const csp = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://maps.googleapis.com https://maps.gstatic.com https://accounts.google.com",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://maps.googleapis.com https://maps.gstatic.com https://accounts.google.com https://checkout.razorpay.com",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' data: https://fonts.gstatic.com",
   // *.googleusercontent.com  = Google user avatars (lh3, lh4 …)
@@ -24,9 +24,9 @@ const csp = [
   // *.googleapis.com covers Firestore, Storage REST, Auth (identitytoolkit, securetoken), Maps, FCM
   // *.firebasestorage.app covers new Firebase Storage SDK URL format (bucket: itstatic-space.firebasestorage.app)
   // *.firebaseapp.com covers Firebase Auth domain token requests
-  "connect-src 'self' https://*.googleapis.com wss://*.firebaseio.com https://*.firebaseio.com https://*.cloudfunctions.net https://*.firebasestorage.app https://*.firebaseapp.com",
+  "connect-src 'self' https://*.googleapis.com wss://*.firebaseio.com https://*.firebaseio.com https://*.cloudfunctions.net https://*.firebasestorage.app https://*.firebaseapp.com https://api.razorpay.com https://lumberjack.razorpay.com",
   // *.firebaseapp.com handles OAuth redirect frames; docs.google.com for embedded Google Forms
-  "frame-src 'self' https://accounts.google.com https://*.firebaseapp.com https://docs.google.com",
+  "frame-src 'self' https://accounts.google.com https://*.firebaseapp.com https://docs.google.com https://api.razorpay.com https://*.razorpay.com",
   "worker-src 'self' blob:",
   "manifest-src 'self'",
 ].join("; ");

@@ -27,6 +27,8 @@ import {
   subscribeToMyNotifications,
   markAllNotificationsRead,
   subscribeToSquadPhotos,
+  claimPhotoDrop,
+  sendSquadMessage,
   db,
   type Squad,
   type KYCSubmission,
@@ -43,6 +45,7 @@ import { authReady, storage } from "@/lib/firebase";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import RecruitDirectory from "./RecruitDirectory";
 import KYCFlow from "./KYCFlow";
+import SubscriptionGate from "./SubscriptionGate";
 import SquadChat from "./SquadChat";
 import IntelPanel from "./IntelPanel";
 import FriendsDirectory from "./FriendsDirectory";
@@ -161,6 +164,8 @@ export default function DiscoverClient({ session }: Props) {
   const guessPinMarkerRef = useRef<google.maps.marker.AdvancedMarkerElement | null>(null);
   const [squadPhotos, setSquadPhotos] = useState<SquadPhoto[]>([]);
   const squadPhotoMarkersRef = useRef<Map<string, google.maps.marker.AdvancedMarkerElement>>(new Map());
+  const [claimingDrop, setClaimingDrop] = useState(false);
+  const [claimResult, setClaimResult] = useState<"success" | "already_claimed" | null>(null);
 
   const AdvancedMarkerElementRef = useRef<typeof google.maps.marker.AdvancedMarkerElement | null>(null);
   const hostMapDivRef = useRef<HTMLDivElement>(null);
@@ -233,8 +238,16 @@ export default function DiscoverClient({ session }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid, firebaseReady]);
 
-  // ── Force KYC tab when profile loads and KYC is not approved ───────────────
+  // ── Subscription gate ─────────────────────────────────────────────────────
   const kycApproved = userProfile?.kycStatus === "approved";
+  const subStatus = userProfile?.subscriptionStatus;
+  const isAdminSuspended = !!userProfile?.adminSuspended;
+  const trialEndsAt = userProfile?.trialEndsAt?.toMillis() ?? 0;
+  const isTrialActive = subStatus === "trial" && trialEndsAt > Date.now();
+  const hasActiveSubscription = !isAdminSuspended && (isTrialActive || subStatus === "active");
+  const needsSubscription = kycApproved && userProfile !== undefined && userProfile !== null && (isAdminSuspended || !hasActiveSubscription);
+
+  // ── Force KYC tab when profile loads and KYC is not approved ───────────────
   useEffect(() => {
     if (userProfile !== undefined && !kycApproved) {
       setActiveNav("kyc");
@@ -780,6 +793,33 @@ export default function DiscoverClient({ session }: Props) {
     return "none";
   }
 
+  async function broadcastDrop(title: string, body: string) {
+    try {
+      await fetch("/api/push/broadcast", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, body, url: "/discover", excludeUid: uid }),
+      });
+    } catch { /* non-critical */ }
+    // Also post system message to all active squads
+    for (const squad of allSquads) {
+      sendSquadMessage(
+        squad.id,
+        { uid: "system", name: "IT'S STATIC", photoURL: "" },
+        `📍 ${body}`
+      ).catch(() => {});
+    }
+  }
+
+  async function handleClaimDrop(drop: PhotoDrop) {
+    if (!userLocation) return;
+    setClaimingDrop(true);
+    setClaimResult(null);
+    const success = await claimPhotoDrop(drop.id, uid, user.name ?? "Anonymous");
+    setClaimResult(success ? "success" : "already_claimed");
+    setClaimingDrop(false);
+  }
+
   async function handlePhotoDrop() {
     if (!photoDropFile || !userLocation) return;
     setPhotoDropUploading(true);
@@ -822,6 +862,10 @@ export default function DiscoverClient({ session }: Props) {
         caption: photoDropCaption.trim().slice(0, 150),
       });
       awardBadge(uid, "explorer").catch(() => {});
+      broadcastDrop(
+        "📍 NEW DROP NEAR YOU",
+        `${user.name ?? "Someone"} dropped a photo challenge in your area! First to find it claims +50 points.`
+      );
       setShowPhotoDropModal(false);
       setPhotoDropCaption("");
       setPhotoDropFile(null);
@@ -863,6 +907,10 @@ export default function DiscoverClient({ session }: Props) {
         caption: createChallengeCaption.trim().slice(0, 150),
         isStandalone: true,
       });
+      broadcastDrop(
+        "📍 CHALLENGE DROPPED",
+        `${user.name ?? "Someone"} posted a new photo challenge! Go find where it was taken. +10 points per correct guess.`
+      );
       setShowCreateChallengeModal(false);
       setCreateChallengeFile(null);
       setCreateChallengeCaption("");
@@ -1897,32 +1945,100 @@ export default function DiscoverClient({ session }: Props) {
       )}
 
       {/* ── PHOTO DROP DETAIL ─────────────────────────────────────────────── */}
-      {selectedPhotoDrop && (
-        <div
-          style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.8)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
-          onClick={() => setSelectedPhotoDrop(null)}
-        >
-          <div onClick={(e) => e.stopPropagation()} style={{ backgroundColor: "#1b1b1e", border: "4px solid #ffe24c", boxShadow: "8px 8px 0 #ffe24c", maxWidth: 400, width: "100%", overflow: "hidden" }}>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={selectedPhotoDrop.imageURL} alt="" style={{ width: "100%", maxHeight: 320, objectFit: "cover", display: "block" }} />
-            <div style={{ padding: "14px 16px", display: "flex", alignItems: "center", gap: 10 }}>
-              {selectedPhotoDrop.photoURL && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={selectedPhotoDrop.photoURL} alt="" style={{ width: 32, height: 32, borderRadius: "50%", border: "2px solid #ffe24c", objectFit: "cover", flexShrink: 0 }} />
-              )}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <p style={{ fontWeight: 800, fontSize: 12, textTransform: "uppercase", color: "#fbf8fc" }}>{selectedPhotoDrop.displayName}</p>
-                {selectedPhotoDrop.caption && (
-                  <p style={{ fontSize: 11, color: "#ffe24c", fontWeight: 600, marginTop: 2 }}>{selectedPhotoDrop.caption}</p>
+      {selectedPhotoDrop && (() => {
+        const drop = selectedPhotoDrop;
+        const distM = userLocation
+          ? Math.round(6371000 * 2 * Math.atan2(
+              Math.sqrt(
+                Math.sin(((drop.location.lat - userLocation.lat) * Math.PI / 180) / 2) ** 2 +
+                Math.cos(userLocation.lat * Math.PI / 180) * Math.cos(drop.location.lat * Math.PI / 180) *
+                Math.sin(((drop.location.lng - userLocation.lng) * Math.PI / 180) / 2) ** 2
+              ),
+              Math.sqrt(1 - (
+                Math.sin(((drop.location.lat - userLocation.lat) * Math.PI / 180) / 2) ** 2 +
+                Math.cos(userLocation.lat * Math.PI / 180) * Math.cos(drop.location.lat * Math.PI / 180) *
+                Math.sin(((drop.location.lng - userLocation.lng) * Math.PI / 180) / 2) ** 2
+              ))
+            ))
+          : null;
+        const inClaimRange = distM !== null && distM <= 150;
+        const isClaimed = !!(drop as PhotoDrop).claimedBy;
+        const claimedByMe = (drop as PhotoDrop).claimedBy === uid;
+        return (
+          <div
+            style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.8)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+            onClick={() => { setSelectedPhotoDrop(null); setClaimResult(null); }}
+          >
+            <div onClick={(e) => e.stopPropagation()} style={{ backgroundColor: "#1b1b1e", border: "4px solid #ffe24c", boxShadow: "8px 8px 0 #ffe24c", maxWidth: 400, width: "100%", overflow: "hidden" }}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={drop.imageURL} alt="" style={{ width: "100%", maxHeight: 320, objectFit: "cover", display: "block" }} />
+              <div style={{ padding: "14px 16px", display: "flex", alignItems: "center", gap: 10 }}>
+                {drop.photoURL && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={drop.photoURL} alt="" style={{ width: 32, height: 32, borderRadius: "50%", border: "2px solid #ffe24c", objectFit: "cover", flexShrink: 0 }} />
                 )}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ fontWeight: 800, fontSize: 12, textTransform: "uppercase", color: "#fbf8fc" }}>{drop.displayName}</p>
+                  {drop.caption && (
+                    <p style={{ fontSize: 11, color: "#ffe24c", fontWeight: 600, marginTop: 2 }}>{drop.caption}</p>
+                  )}
+                  {distM !== null && (
+                    <p style={{ fontSize: 10, color: inClaimRange ? "#4caf50" : "#aaa", fontWeight: 700, marginTop: 2 }}>
+                      {inClaimRange ? "✓ YOU'RE IN RANGE" : `📍 ${distM}m away`}
+                    </p>
+                  )}
+                </div>
+                <button onClick={() => { setSelectedPhotoDrop(null); setClaimResult(null); }} style={{ background: "none", border: "none", cursor: "pointer", color: "#fbf8fc" }}>
+                  <span className="material-symbols-outlined" style={{ fontSize: 22 }}>close</span>
+                </button>
               </div>
-              <button onClick={() => setSelectedPhotoDrop(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#fbf8fc" }}>
-                <span className="material-symbols-outlined" style={{ fontSize: 22 }}>close</span>
-              </button>
+
+              {/* Claim section */}
+              {drop.uid !== uid && (
+                <div style={{ padding: "0 16px 16px" }}>
+                  {isClaimed ? (
+                    <div style={{ padding: "10px 14px", backgroundColor: claimedByMe ? "#c8f7c5" : "#3d3d3d", border: `2px solid ${claimedByMe ? "#4caf50" : "#666"}`, textAlign: "center" }}>
+                      <p style={{ fontSize: 12, fontWeight: 800, textTransform: "uppercase", color: claimedByMe ? "#4caf50" : "#aaa" }}>
+                        {claimedByMe ? "✓ YOU CLAIMED THIS (+50 pts)" : `CLAIMED BY ${(drop as PhotoDrop).claimerName ?? "someone"}`}
+                      </p>
+                    </div>
+                  ) : claimResult === "success" ? (
+                    <div style={{ padding: "10px 14px", backgroundColor: "#c8f7c5", border: "2px solid #4caf50", textAlign: "center" }}>
+                      <p style={{ fontSize: 13, fontWeight: 900, textTransform: "uppercase", color: "#4caf50" }}>🎉 CLAIMED! +50 POINTS</p>
+                    </div>
+                  ) : claimResult === "already_claimed" ? (
+                    <div style={{ padding: "10px 14px", backgroundColor: "#ffd8e7", border: "2px solid #ba1a1a", textAlign: "center" }}>
+                      <p style={{ fontSize: 12, fontWeight: 800, color: "#ba1a1a" }}>Already claimed by someone else!</p>
+                    </div>
+                  ) : inClaimRange ? (
+                    <button
+                      onClick={() => handleClaimDrop(drop as PhotoDrop)}
+                      disabled={claimingDrop}
+                      style={{
+                        width: "100%", padding: "14px", backgroundColor: claimingDrop ? "#544249" : "#ffe24c",
+                        color: "#1b1b1e", border: "3px solid #ffe24c",
+                        fontWeight: 900, fontSize: 14, textTransform: "uppercase",
+                        cursor: claimingDrop ? "not-allowed" : "pointer",
+                        fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                        boxShadow: "4px 4px 0 #ffe24c",
+                      }}
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: 20, fontVariationSettings: "'FILL' 1" }}>emoji_events</span>
+                      {claimingDrop ? "CLAIMING…" : "CLAIM IT (+50 PTS)"}
+                    </button>
+                  ) : (
+                    <div style={{ padding: "10px 14px", backgroundColor: "#2a2a2a", border: "2px solid #555", textAlign: "center" }}>
+                      <p style={{ fontSize: 11, fontWeight: 700, color: "#aaa", textTransform: "uppercase" }}>
+                        Get within 150m to claim · {distM !== null ? `${distM}m away` : "location unavailable"}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* ── PHOTO DROP MODAL ─────────────────────────────────────────────── */}
       {showPhotoDropModal && (
@@ -2279,6 +2395,24 @@ export default function DiscoverClient({ session }: Props) {
             )}
           </div>
         </div>
+      )}
+
+      {/* ── SUBSCRIPTION GATE ───────────────────────────────────────────── */}
+      {needsSubscription && userProfile && (
+        <SubscriptionGate
+          userProfile={userProfile}
+          userEmail={uid}
+          userName={user.name ?? ""}
+        />
+      )}
+
+      {/* ── TRIAL BANNER (shown in header area when in trial) ───────────── */}
+      {isTrialActive && userProfile && (
+        <SubscriptionGate
+          userProfile={userProfile}
+          userEmail={uid}
+          userName={user.name ?? ""}
+        />
       )}
 
       {/* ── MOBILE BOTTOM NAV — phone only (< 640px) ─────────────────────── */}
