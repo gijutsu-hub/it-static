@@ -29,6 +29,7 @@ import {
   subscribeToSquadPhotos,
   claimPhotoDrop,
   sendSquadMessage,
+  getOrCreateReferralCode,
   db,
   type Squad,
   type KYCSubmission,
@@ -54,6 +55,9 @@ import ExplorePanel from "./ExplorePanel";
 import LeaderboardPanel from "./LeaderboardPanel";
 import StorePanel from "./StorePanel";
 import WebRTCCallComponent from "./WebRTCCall";
+import FeedPanel from "./FeedPanel";
+import CheckInWidget from "./CheckInWidget";
+import { getTier } from "@/lib/tiers";
 import { signOut } from "next-auth/react";
 import QRCode from "qrcode";
 
@@ -114,7 +118,7 @@ export default function DiscoverClient({ session }: Props) {
   const [allSquads, setAllSquads] = useState<Squad[]>([]);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [nearbySquads, setNearbySquads] = useState<Squad[]>([]);
-  const [activeNav, setActiveNav] = useState<"squads" | "intel" | "recruits" | "kyc" | "friends" | "explore" | "store" | "leaderboard">(
+  const [activeNav, setActiveNav] = useState<"squads" | "intel" | "recruits" | "kyc" | "friends" | "explore" | "store" | "leaderboard" | "feed">(
     "squads"
   );
   const [kycSubmission, setKycSubmission] = useState<KYCSubmission | null | undefined>(undefined);
@@ -203,13 +207,14 @@ export default function DiscoverClient({ session }: Props) {
     authReady.then(() => setFirebaseReady(true));
   }, []);
 
-  // ── Register user in Firestore immediately on mount ───────────────────────
+  // ── Register user in Firestore + ensure referral code on mount ────────────
   useEffect(() => {
     if (!firebaseReady) return;
     upsertUser(uid, {
       displayName: user.name ?? "Anonymous",
       photoURL: user.image ?? "",
     }).catch(() => {});
+    getOrCreateReferralCode(uid).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [firebaseReady]);
 
@@ -1111,6 +1116,33 @@ export default function DiscoverClient({ session }: Props) {
                   )}
                   <p style={{ fontWeight: 800, fontSize: 13, color: "#1b1b1e", textTransform: "uppercase", letterSpacing: "0.02em" }}>{user.name}</p>
                   <p style={{ fontSize: 11, color: "#544249", marginTop: 2 }}>{user.email}</p>
+                  {/* Tier badge */}
+                  {(() => {
+                    const t = getTier(userProfile?.points ?? 0);
+                    return (
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+                        <span style={{
+                          display: "inline-flex", alignItems: "center", gap: 4,
+                          padding: "2px 8px", fontSize: 10, fontWeight: 800,
+                          textTransform: "uppercase", letterSpacing: "0.04em",
+                          backgroundColor: t.color, color: t.textColor, border: `1.5px solid ${t.borderColor}`,
+                        }}>
+                          {t.emoji} {t.name}
+                        </span>
+                        {(userProfile?.points ?? 0) > 0 && (
+                          <span style={{ fontSize: 10, fontWeight: 700, color: "#9f376f" }}>
+                            {(userProfile?.points ?? 0).toLocaleString()} pts
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
+                  {/* Streak */}
+                  {(userProfile?.streakCount ?? 0) > 0 && (
+                    <div style={{ marginTop: 6, fontSize: 11, fontWeight: 700, color: "#544249" }}>
+                      🔥 {userProfile!.streakCount}-day streak
+                    </div>
+                  )}
                   {userProfile?.kycStatus === "approved" && (
                     <div style={{ display: "inline-flex", alignItems: "center", gap: 4, marginTop: 6, padding: "2px 8px", backgroundColor: "#c8f7c5", border: "1.5px solid #1b1b1e", borderRadius: 999 }}>
                       <span className="material-symbols-outlined" style={{ fontSize: 12, color: "#4caf50" }}>verified</span>
@@ -1118,6 +1150,25 @@ export default function DiscoverClient({ session }: Props) {
                     </div>
                   )}
                 </div>
+                {/* Referral code */}
+                {userProfile?.referralCode && (
+                  <div style={{ padding: "10px 14px", borderTop: "2px solid #e4e1e6", borderBottom: "2px solid #e4e1e6", textAlign: "center" }}>
+                    <p style={{ fontSize: 9, fontWeight: 800, textTransform: "uppercase", color: "#888", letterSpacing: "0.06em", marginBottom: 4 }}>
+                      Your Invite Code
+                    </p>
+                    <button
+                      onClick={() => navigator.clipboard.writeText(userProfile.referralCode!)}
+                      style={{
+                        fontFamily: "monospace", fontSize: 16, fontWeight: 800, letterSpacing: "0.1em",
+                        color: "#9f376f", background: "none", border: "none", cursor: "pointer", padding: 0,
+                      }}
+                      title="Click to copy"
+                    >
+                      {userProfile.referralCode}
+                    </button>
+                    <p style={{ fontSize: 9, color: "#aaa", marginTop: 2 }}>click to copy • share to recruit</p>
+                  </div>
+                )}
                 <div style={{ padding: 8 }}>
                   <button
                     onClick={() => signOut({ callbackUrl: "/auth" })}
@@ -1194,6 +1245,7 @@ export default function DiscoverClient({ session }: Props) {
         <nav style={{ display: "flex", flexDirection: "column", gap: 6, padding: "0 16px" }}>
           {[
             { icon: mySquad ? "chat" : "groups", label: mySquad ? "SQUAD CHAT" : "Squads", key: "squads" },
+            { icon: "dynamic_feed", label: "FEED", key: "feed" },
             { icon: "fingerprint", label: "VERIFY ID", key: "kyc" },
             { icon: "person_search", label: "Recruits", key: "recruits" },
             { icon: "diversity_3", label: "Friends", key: "friends" },
@@ -1441,11 +1493,23 @@ export default function DiscoverClient({ session }: Props) {
           </div>
         )}
 
+        {/* Feed panel */}
+        {activeNav === "feed" && (
+          <div className="discover-overlay-panel">
+            <FeedPanel
+              uid={uid}
+              displayName={user.name ?? "Hunter"}
+              photoURL={user.image ?? ""}
+              points={userProfile?.points ?? 0}
+            />
+          </div>
+        )}
+
         {/* Google Map — kept mounted for Google Maps lifecycle, hidden when overlay panels are active */}
         {(() => {
           const panelActive = (activeNav === "recruits" || activeNav === "kyc" || activeNav === "intel" ||
             activeNav === "friends" || activeNav === "leaderboard" ||
-            activeNav === "store" || (activeNav === "explore" && !guessMode) ||
+            activeNav === "store" || activeNav === "feed" || (activeNav === "explore" && !guessMode) ||
             (activeNav === "squads" && !!mySquad && kycApproved));
           return (
             <div
@@ -1523,7 +1587,7 @@ export default function DiscoverClient({ session }: Props) {
         )}
 
         {/* Loading overlay */}
-        {!mapsReady && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "leaderboard" && activeNav !== "store" && !(activeNav === "explore" && !guessMode) && !(activeNav === "squads" && !!mySquad && kycApproved) && (
+        {!mapsReady && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "leaderboard" && activeNav !== "store" && activeNav !== "feed" && !(activeNav === "explore" && !guessMode) && !(activeNav === "squads" && !!mySquad && kycApproved) && (
           <div
             style={{
               position: "absolute", inset: 0,
@@ -1556,7 +1620,7 @@ export default function DiscoverClient({ session }: Props) {
         )}
 
         {/* Location denied notice */}
-        {locationDenied && !guessMode && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "leaderboard" && activeNav !== "store" && !(activeNav === "explore" && !guessMode) && !(activeNav === "squads" && !!mySquad && kycApproved) && (
+        {locationDenied && !guessMode && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "leaderboard" && activeNav !== "store" && activeNav !== "feed" && !(activeNav === "explore" && !guessMode) && !(activeNav === "squads" && !!mySquad && kycApproved) && (
           <div
             style={{
               position: "absolute", top: 16, left: "50%",
@@ -1572,6 +1636,21 @@ export default function DiscoverClient({ session }: Props) {
             <span style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", color: "#1b1b1e" }}>
               Location denied — showing default area
             </span>
+          </div>
+        )}
+
+        {/* ── CHECK-IN WIDGET ──────────────────────────────────────────── */}
+        {kycApproved && !guessMode && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "leaderboard" && activeNav !== "store" && activeNav !== "feed" && !(activeNav === "explore" && !guessMode) && !(activeNav === "squads" && !!mySquad && kycApproved) && (
+          <div style={{ position: "absolute", right: 16, bottom: 80, zIndex: 20 }}>
+            <CheckInWidget
+              uid={uid}
+              displayName={user.name ?? "Hunter"}
+              photoURL={user.image ?? ""}
+              points={userProfile?.points ?? 0}
+              streakCount={userProfile?.streakCount}
+              lastCheckIn={userProfile?.lastCheckIn as { toDate: () => Date } | undefined}
+              onCheckedIn={() => {}}
+            />
           </div>
         )}
 
@@ -1610,7 +1689,7 @@ export default function DiscoverClient({ session }: Props) {
         )}
 
         {/* ── RIGHT OVERLAY PANELS ──────────────────────────────────────── */}
-        {!guessMode && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "leaderboard" && activeNav !== "store" && activeNav !== "explore" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
+        {!guessMode && activeNav !== "recruits" && activeNav !== "kyc" && activeNav !== "intel" && activeNav !== "friends" && activeNav !== "leaderboard" && activeNav !== "store" && activeNav !== "feed" && activeNav !== "explore" && !(activeNav === "squads" && !!mySquad && kycApproved) && (
         <div
           style={{
             position: "absolute", right: 24, top: 24,

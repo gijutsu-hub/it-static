@@ -70,6 +70,15 @@ export interface UserProfile {
   lastChargedAt?: Timestamp;
   // Admin controls
   adminSuspended?: boolean;
+  entryCodeRedeemed?: boolean;
+  // Streak
+  streakCount?: number;
+  longestStreak?: number;
+  lastCheckIn?: Timestamp;
+  // Referral
+  referralCode?: string;
+  referredBy?: string;
+  referralCount?: number;
 }
 
 export interface FriendRequest {
@@ -1475,4 +1484,414 @@ export function subscribeToLeaderboard(
       .slice(0, 30);
     callback(users);
   }, () => {});
+}
+
+// ── Entry Code Drops ───────────────────────────────────────────────────────────
+
+export interface CodeDrop {
+  id: string;
+  code: string;
+  label: string;
+  lat: number;
+  lng: number;
+  active: boolean;
+  maxUses: number;       // 0 = unlimited
+  usedCount: number;
+  redeemedBy: string[];  // emails
+  createdAt: Timestamp;
+  expiresAt?: Timestamp;
+}
+
+export async function createCodeDrop(
+  data: Omit<CodeDrop, "id" | "createdAt" | "usedCount" | "redeemedBy">
+): Promise<string> {
+  const ref = await addDoc(collection(db, "entryCodeDrops"), {
+    ...data,
+    code: data.code.toUpperCase().trim(),
+    usedCount: 0,
+    redeemedBy: [],
+    createdAt: Timestamp.now(),
+  });
+  return ref.id;
+}
+
+export function subscribeToAllCodeDrops(
+  callback: (drops: CodeDrop[]) => void
+): () => void {
+  return onSnapshot(
+    query(collection(db, "entryCodeDrops"), orderBy("createdAt", "desc")),
+    (snap) => {
+      callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as CodeDrop)));
+    },
+    () => {}
+  );
+}
+
+export async function toggleCodeDrop(id: string, active: boolean): Promise<void> {
+  await updateDoc(doc(db, "entryCodeDrops", id), { active });
+}
+
+export async function deleteCodeDrop(id: string): Promise<void> {
+  await deleteDoc(doc(db, "entryCodeDrops", id));
+}
+
+export function subscribeToActiveDropLocations(
+  callback: (locs: { id: string; label: string; lat: number; lng: number }[]) => void
+): () => void {
+  const q = query(collection(db, "entryCodeDrops"), where("active", "==", true));
+  return onSnapshot(
+    q,
+    (snap) =>
+      callback(
+        snap.docs.map((d) => {
+          const x = d.data();
+          return { id: d.id, label: x.label as string, lat: x.lat as number, lng: x.lng as number };
+        })
+      ),
+    () => {}
+  );
+}
+
+// ── Admin-only helpers ─────────────────────────────────────────────────────────
+
+export async function adminGrantFreeAccess(email: string): Promise<void> {
+  await updateDoc(doc(db, "users", email), {
+    subscriptionStatus: "active",
+    adminSuspended: false,
+    subscriptionActivatedAt: Timestamp.now(),
+  });
+}
+
+export async function adminSetSubscriptionStatus(
+  email: string,
+  status: UserProfile["subscriptionStatus"]
+): Promise<void> {
+  await updateDoc(doc(db, "users", email), { subscriptionStatus: status });
+}
+
+export async function adminRestoreTrial(email: string): Promise<void> {
+  const trialEndsAt = Timestamp.fromDate(
+    new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+  );
+  await updateDoc(doc(db, "users", email), {
+    subscriptionStatus: "trial",
+    adminSuspended: false,
+    trialStartedAt: Timestamp.now(),
+    trialEndsAt,
+  });
+}
+
+export async function adminEditProfile(
+  email: string,
+  fields: Partial<Pick<UserProfile, "displayName" | "bio" | "codename" | "interests" | "badges" | "points">>
+): Promise<void> {
+  const clean: Record<string, unknown> = {};
+  if (fields.displayName !== undefined) clean.displayName = fields.displayName;
+  if (fields.bio !== undefined)         clean.bio         = fields.bio;
+  if (fields.codename !== undefined)    clean.codename    = fields.codename;
+  if (fields.interests !== undefined)   clean.interests   = fields.interests;
+  if (fields.badges !== undefined)      clean.badges      = fields.badges;
+  if (fields.points !== undefined)      clean.points      = fields.points;
+  await updateDoc(doc(db, "users", email), clean);
+}
+
+// ── Admin Settings ─────────────────────────────────────────────────────────────
+
+export interface AdminSettings {
+  trialDays: number;
+  supportEmail: string;
+  smtpFrom: string;
+  razorpayPlanId: string;
+  subscriptionPriceDisplay: string;
+  pointsPerAction: {
+    checkIn: number;
+    photoChallenge: number;
+    treasureHunt: number;
+    squadJoin: number;
+    entryCode: number;
+    referral: number;
+  };
+}
+
+const DEFAULT_SETTINGS: AdminSettings = {
+  trialDays: 7,
+  supportEmail: "",
+  smtpFrom: "",
+  razorpayPlanId: "",
+  subscriptionPriceDisplay: "",
+  pointsPerAction: {
+    checkIn: 10,
+    photoChallenge: 25,
+    treasureHunt: 50,
+    squadJoin: 5,
+    entryCode: 50,
+    referral: 100,
+  },
+};
+
+export async function getAdminSettings(): Promise<AdminSettings> {
+  const snap = await getDoc(doc(db, "adminSettings", "platform"));
+  if (!snap.exists()) return DEFAULT_SETTINGS;
+  return { ...DEFAULT_SETTINGS, ...snap.data() } as AdminSettings;
+}
+
+export async function updateAdminSettings(fields: Partial<AdminSettings>): Promise<void> {
+  await setDoc(doc(db, "adminSettings", "platform"), fields, { merge: true });
+}
+
+// ── Points Log ─────────────────────────────────────────────────────────────────
+
+export interface PointsLogEntry {
+  id: string;
+  userEmail: string;
+  userName: string;
+  amount: number;
+  reason: string;
+  adminEmail: string;
+  createdAt: Timestamp;
+}
+
+export async function addPointsWithLog(
+  userEmail: string,
+  userName: string,
+  amount: number,
+  reason: string,
+  adminEmail: string
+): Promise<void> {
+  await runTransaction(db, async (tx) => {
+    const userRef = doc(db, "users", userEmail);
+    const snap = await tx.get(userRef);
+    if (!snap.exists()) throw new Error("User not found");
+    const current = (snap.data().points as number) ?? 0;
+    tx.update(userRef, { points: current + amount });
+    tx.set(doc(collection(db, "pointsLog")), {
+      userEmail,
+      userName,
+      amount,
+      reason,
+      adminEmail,
+      createdAt: Timestamp.now(),
+    });
+  });
+}
+
+export function subscribeToPointsLog(
+  callback: (entries: PointsLogEntry[]) => void
+): () => void {
+  const q = query(collection(db, "pointsLog"), orderBy("createdAt", "desc"), limit(200));
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as PointsLogEntry)));
+  });
+}
+
+// ── Activity Feed ──────────────────────────────────────────────────────────────
+
+export type ActivityType =
+  | "hunt_found"
+  | "check_in"
+  | "badge_earned"
+  | "photo_challenge"
+  | "squad_formed"
+  | "drop_created"
+  | "points_milestone"
+  | "referral";
+
+export interface ActivityFeedItem {
+  id: string;
+  uid: string;
+  displayName: string;
+  photoURL: string;
+  type: ActivityType;
+  title: string;
+  body?: string;
+  imageURL?: string;
+  locationName?: string;
+  likes: string[];
+  createdAt: Timestamp;
+  tier?: string;
+}
+
+export async function postActivity(
+  item: Omit<ActivityFeedItem, "id" | "createdAt" | "likes">
+): Promise<string> {
+  const ref = await addDoc(collection(db, "activityFeed"), {
+    ...item,
+    likes: [],
+    createdAt: Timestamp.now(),
+  });
+  return ref.id;
+}
+
+export function subscribeToFeed(
+  callback: (items: ActivityFeedItem[]) => void
+): () => void {
+  const q = query(collection(db, "activityFeed"), orderBy("createdAt", "desc"), limit(60));
+  return onSnapshot(q, (snap) => {
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ActivityFeedItem)));
+  });
+}
+
+export async function toggleFeedLike(itemId: string, userEmail: string): Promise<void> {
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, "activityFeed", itemId);
+    const snap = await tx.get(ref);
+    if (!snap.exists()) return;
+    const likes: string[] = snap.data().likes ?? [];
+    if (likes.includes(userEmail)) {
+      tx.update(ref, { likes: likes.filter((e) => e !== userEmail) });
+    } else {
+      tx.update(ref, { likes: arrayUnion(userEmail) });
+    }
+  });
+}
+
+// ── Daily Check-in / Streak ────────────────────────────────────────────────────
+
+const CHECK_IN_POINTS = 10;
+const STREAK_BONUS_POINTS = 5; // extra per streak day
+
+export async function doCheckIn(
+  email: string,
+  displayName: string,
+  photoURL: string,
+  tier: string
+): Promise<{ newStreak: number; alreadyDone: boolean; pointsEarned: number }> {
+  let newStreak = 1;
+  let alreadyDone = false;
+  let pointsEarned = 0;
+
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, "users", email);
+    const snap = await tx.get(ref);
+    const data = snap.exists() ? snap.data() : {};
+
+    const lastCheckIn: Timestamp | undefined = data.lastCheckIn;
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10);
+
+    if (lastCheckIn) {
+      const lastDate = lastCheckIn.toDate().toISOString().slice(0, 10);
+      if (lastDate === todayStr) {
+        alreadyDone = true;
+        newStreak = data.streakCount ?? 1;
+        return;
+      }
+      const yesterday = new Date(now);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yesterdayStr = yesterday.toISOString().slice(0, 10);
+      if (lastDate === yesterdayStr) {
+        newStreak = (data.streakCount ?? 0) + 1;
+      } else {
+        newStreak = 1;
+      }
+    }
+
+    const bonus = Math.min(newStreak - 1, 9) * STREAK_BONUS_POINTS;
+    pointsEarned = CHECK_IN_POINTS + bonus;
+    const current = (data.points as number) ?? 0;
+    const longest = Math.max(newStreak, data.longestStreak ?? 0);
+
+    tx.set(ref, {
+      streakCount: newStreak,
+      longestStreak: longest,
+      lastCheckIn: Timestamp.now(),
+      points: current + pointsEarned,
+    }, { merge: true });
+
+    // Post to feed
+    tx.set(doc(collection(db, "activityFeed")), {
+      uid: email,
+      displayName,
+      photoURL,
+      type: "check_in",
+      title: `${displayName} checked in — Day ${newStreak} streak!`,
+      body: newStreak >= 7 ? `🔥 ${newStreak}-day streak!` : undefined,
+      likes: [],
+      tier,
+      createdAt: Timestamp.now(),
+    });
+  });
+
+  return { newStreak, alreadyDone, pointsEarned };
+}
+
+// ── Referral System ────────────────────────────────────────────────────────────
+
+function makeCode(email: string): string {
+  // Deterministic 6-char code from email — collision-safe for small scale
+  let hash = 0;
+  for (let i = 0; i < email.length; i++) {
+    hash = (Math.imul(31, hash) + email.charCodeAt(i)) | 0;
+  }
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  let h = Math.abs(hash);
+  for (let i = 0; i < 6; i++) {
+    code += chars[h % chars.length];
+    h = Math.floor(h / chars.length) + (i * 7);
+  }
+  return code;
+}
+
+export async function getOrCreateReferralCode(email: string): Promise<string> {
+  const ref = doc(db, "users", email);
+  const snap = await getDoc(ref);
+  if (snap.exists() && snap.data().referralCode) {
+    return snap.data().referralCode as string;
+  }
+  const code = makeCode(email);
+  await updateDoc(ref, { referralCode: code });
+  // Store reverse lookup
+  await setDoc(doc(db, "referralCodes", code), { ownerEmail: email }, { merge: true });
+  return code;
+}
+
+export async function applyReferral(
+  newUserEmail: string,
+  referralCode: string,
+  newUserName: string
+): Promise<{ ok: boolean; referrerEmail?: string }> {
+  const codeRef = doc(db, "referralCodes", referralCode.toUpperCase());
+  const codeSnap = await getDoc(codeRef);
+  if (!codeSnap.exists()) return { ok: false };
+
+  const referrerEmail = codeSnap.data().ownerEmail as string;
+  if (referrerEmail === newUserEmail) return { ok: false };
+
+  await runTransaction(db, async (tx) => {
+    const newUserRef = doc(db, "users", newUserEmail);
+    const referrerRef = doc(db, "users", referrerEmail);
+
+    const [newUserSnap, referrerSnap] = await Promise.all([
+      tx.get(newUserRef),
+      tx.get(referrerRef),
+    ]);
+
+    if (newUserSnap.exists() && newUserSnap.data().referredBy) return; // already applied
+
+    const referrerData = referrerSnap.exists() ? referrerSnap.data() : {};
+    const referrerPoints = (referrerData.points as number) ?? 0;
+    const referrerCount = (referrerData.referralCount as number) ?? 0;
+
+    tx.set(newUserRef, { referredBy: referrerEmail, points: increment(50) }, { merge: true });
+    tx.set(referrerRef, {
+      points: referrerPoints + 100,
+      referralCount: referrerCount + 1,
+    }, { merge: true });
+
+    // Feed posts
+    const referrerName = referrerData.displayName ?? referrerEmail;
+    tx.set(doc(collection(db, "activityFeed")), {
+      uid: referrerEmail,
+      displayName: referrerName,
+      photoURL: referrerData.photoURL ?? "",
+      type: "referral",
+      title: `${referrerName} recruited ${newUserName} to the hunt!`,
+      body: "+100 pts for recruiting",
+      likes: [],
+      createdAt: Timestamp.now(),
+    });
+  });
+
+  return { ok: true, referrerEmail };
 }

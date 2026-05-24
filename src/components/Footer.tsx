@@ -16,11 +16,12 @@ export default function Footer() {
 
         <nav className="flex flex-wrap gap-3 md:gap-6">
           {[
-            { label: "PROTOCOLS", href: "#" },
-            { label: "MANIFESTO", href: "#" },
+            { label: "ABOUT", href: "/about" },
+            { label: "RULES", href: "/about#rules" },
             { label: "GUESS THE STATIC", href: "#guess-the-static" },
-            { label: "PRIVACY", href: "#" },
-            { label: "TERMS", href: "#" },
+            { label: "PRIVACY", href: "/about#privacy" },
+            { label: "TERMS", href: "/about#terms" },
+            { label: "CONTACT", href: "/contact" },
           ].map(({ label, href }) => (
             <Link
               key={label}
